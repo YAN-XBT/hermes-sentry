@@ -46,6 +46,27 @@ _lock = threading.Lock()
 _memory: deque[dict] = deque(maxlen=MAX_MEMORY_ROWS)
 _state: dict[str, Any] = {"conn": None, "failed": False, "path": ""}
 
+# The desktop half subscribes through this: one listener, fed every recorded row, so the console
+# updates the moment a call is decided. No listener (no Desktop attached, headless run) costs
+# nothing, and a listener that raises can never break the tool path.
+_listener: Any = None
+
+
+def set_listener(fn: Any) -> None:
+    """Register the sink that receives every recorded row."""
+    global _listener
+    _listener = fn
+
+
+def _notify(row: dict) -> None:
+    fn = _listener
+    if fn is None:
+        return
+    try:
+        fn(row)
+    except Exception:  # pragma: no cover
+        pass
+
 
 def _connect() -> sqlite3.Connection | None:
     """Open (once) the receipts DB. Returns ``None`` if storage is unavailable."""
@@ -104,6 +125,7 @@ def record(
             conn = _connect()
             if conn is None:
                 _memory.append(row)
+                _notify(row)
                 return
             conn.execute(
                 "INSERT INTO receipts (ts, session_id, turn_id, kind, tool_name, rule, action,"
@@ -126,6 +148,7 @@ def record(
         logger.debug("sentry: receipt write failed (%s)", err)
         with _lock:
             _memory.append(row)
+    _notify(row)
 
 
 def recent(limit: int = 20, *, session_id: str = "", actions_only: bool = False) -> list[dict]:

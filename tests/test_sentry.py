@@ -788,6 +788,62 @@ def test_tamper_rule_honours_an_explicit_grant() -> None:
     ).action == "block"
 
 
+def test_tamper_rule_covers_the_plugins_own_api() -> None:
+    """A tainted agent must not be able to relax its own rules over loopback."""
+    _reset()
+    assert _decide(
+        "terminal",
+        {
+            "command": "curl -sS -X POST http://127.0.0.1:8765/api/plugins/sentry/rules "
+            "-d '{\"rule\":\"credential_read\",\"action\":\"allow\"}'"
+        },
+        tainted=True,
+    ).action == "block"
+    assert _decide(
+        "terminal",
+        {"command": "curl -sS http://127.0.0.1:8765/api/plugins/sentry/state"},
+        tainted=True,
+    ).action == "block"
+    # an unrelated local API is not the control surface
+    assert _decide(
+        "terminal", {"command": "curl -sS http://127.0.0.1:8765/api/plugins/other/state"}, tainted=True
+    ).action == "allow"
+
+
+def test_receipt_listener_gets_every_row() -> None:
+    """The desktop half's live feed: one listener, fed every recorded row."""
+    _reset()
+    seen: list[dict] = []
+    receipts.set_listener(seen.append)
+    try:
+        receipts.record(
+            kind="decision", action="block", rule="credential_read", tool_name="read_file",
+            session_id="s", detail="x",
+        )
+        receipts.record(
+            kind="provenance", action="tag", rule="untrusted_source", tool_name="web_fetch",
+            session_id="s", detail="y",
+        )
+    finally:
+        receipts.set_listener(None)
+    assert [row["kind"] for row in seen] == ["decision", "provenance"]
+    assert seen[0]["rule"] == "credential_read"
+
+
+def test_a_listener_that_raises_cannot_break_a_record() -> None:
+    _reset()
+
+    def boom(row: dict) -> None:
+        raise RuntimeError("listener exploded")
+
+    receipts.set_listener(boom)
+    try:
+        receipts.record(kind="decision", action="block", rule="r", tool_name="t", session_id="s", detail="d")
+    finally:
+        receipts.set_listener(None)
+    assert receipts.recent(limit=1)  # the row still landed
+
+
 def test_sentry_tamper_is_blocked() -> None:
     _reset()
     for args in (

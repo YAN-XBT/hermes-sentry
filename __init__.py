@@ -299,6 +299,20 @@ def on_transform_tool_result(
         )
 
 
+def _broadcast(event: str, payload: dict | None = None) -> None:
+    """Push to the desktop half over the gateway event stream.
+
+    Fire-and-forget and optional by construction: with no Desktop client attached the core call is a
+    logged no-op, and a host without the module simply gets nothing.
+    """
+    try:
+        from hermes_cli.plugin_events import broadcast_plugin_event
+
+        broadcast_plugin_event("sentry", event, payload or {})
+    except Exception:
+        pass
+
+
 def _call_variants(tool_name: str, args: dict) -> list[tuple[str, dict]]:
     """Every call one tool invocation really makes.
 
@@ -526,6 +540,20 @@ def register(ctx: Any) -> None:
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
     ctx.register_hook("pre_llm_call", on_pre_llm_call)
     ctx.register_hook("subagent_start", on_subagent_start)
+
+    # Live feed for the desktop half: every recorded row is pushed to the plugin's own event stream,
+    # which the console subscribes to. No Desktop attached — the call is a logged no-op.
+    receipts.set_listener(
+        lambda row: _broadcast(
+            "decision" if str(row.get("kind")) == "decision" else "provenance",
+            {
+                "action": row.get("action"),
+                "rule": row.get("rule"),
+                "tool": row.get("tool_name"),
+                "detail": row.get("detail"),
+            },
+        )
+    )
 
     try:
         ctx.register_cli_command(

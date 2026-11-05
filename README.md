@@ -52,6 +52,20 @@ no rule fires. Enforcement only starts once third-party content has entered the 
 | `sentry_status` tool | Taint state, policy in force, receipt tallies (read-only) |
 | `sentry_receipts` tool | Recent decisions with the source that caused them (read-only) |
 | `hermes sentry` CLI | `status`, `where`, `policy`, `receipts`, `test`, `explain`, `clear`, `allow`, `export` |
+| `desktop/plugin.js` | Desktop pane, status-bar chip and ⌘K commands — live taint state, the receipt feed, per-rule actions |
+| `dashboard/plugin_api.py` | That pane's backend: `/api/plugins/sentry/{state,receipts,explain,taint/clear,rules}` |
+
+The desktop half ships **inside this package** (`desktop/plugin.js`), so one install carries both.
+The app copies it out on install and loads it through the normal disk door; it is **off until you
+switch it on** in Settings → Plugins. It reads live state from the backend, which runs in the gateway
+process and therefore sees the same taint store and ledger the hooks use, and the gateway pushes every
+recorded decision to the pane — so the feed updates the moment a call is refused. The 5 s poll behind
+it is the fallback, because a socket can always drop.
+
+One asymmetry worth knowing: the pane *can* change a rule (that is your click), while a tool call
+that tries the same thing — `hermes sentry set`, the equivalent edit in `config.yaml`, or a request
+to this plugin's own API over loopback — is refused by `sentry_tamper`. The guardrail protects itself
+from the agent, not from you.
 
 Nothing is patched, wrapped or rebound. Every decision is a return value on a documented hook.
 

@@ -74,6 +74,7 @@ _CONTROL_RE = re.compile(
     r"(?i)(?:"
     r"plugin-data[/\\]" + _P + r"|"
     r"plugins[/\\]" + _P + r"|"
+    r"api[/\\]plugins[/\\]" + _P + r"|"
     r"hermes\s+plugins?\s+(?:disable|remove|uninstall)\s+" + _P + r"|"
     r"hermes\s+config\s+(?:set|unset)\s+plugins\.entries\." + _P + r"|"
     r"hermes\s+" + _P + r"\s+(?:set|allow|clear)"
@@ -85,7 +86,8 @@ _CONTROL_RE = re.compile(
 _TAMPER_VERBS = (
     r"rm|rmdir|del|erase|Remove-Item|mv|move|cp|copy|Copy-Item|install|"
     r"truncate|tee|sed|dd|patch|chmod|chown|Set-Content|Add-Content|Out-File|New-Item|"
-    r"rmtree|unlink|remove|rename|write_text|write_bytes|mkdir|touch"
+    r"rmtree|unlink|remove|rename|write_text|write_bytes|mkdir|touch|"
+    r"curl|wget|httpie|Invoke-WebRequest|Invoke-RestMethod|iwr"
 )
 
 _SHELL_TAMPER_RE = re.compile(
