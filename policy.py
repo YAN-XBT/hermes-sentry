@@ -74,43 +74,90 @@ _CONTROL_RE = re.compile(
     r"(?i)(?:"
     r"plugin-data[/\\]" + _P + r"|"
     r"plugins[/\\]" + _P + r"|"
-    r"hermes\s+plugins?\s+disable\s+" + _P + r"|"
+    r"hermes\s+plugins?\s+(?:disable|remove|uninstall)\s+" + _P + r"|"
     r"hermes\s+config\s+(?:set|unset)\s+plugins\.entries\." + _P + r"|"
     r"hermes\s+" + _P + r"\s+(?:set|allow|clear)"
     r")"
 )
 
+# Verbs that put something on disk. A control path is only a target when one of these is near it —
+# `ls ~/.hermes/plugins/sentry` and `sha256sum .../sentry/sources.py` are not tampering.
+_TAMPER_VERBS = (
+    r"rm|rmdir|del|erase|Remove-Item|mv|move|cp|copy|Copy-Item|install|"
+    r"truncate|tee|sed|dd|patch|chmod|chown|Set-Content|Add-Content|Out-File|New-Item|"
+    r"rmtree|unlink|remove|rename|write_text|write_bytes|mkdir|touch"
+)
+
 _SHELL_TAMPER_RE = re.compile(
     r"(?i)(?:"
-    r"hermes\s+plugins?\s+disable\s+" + _P + r"|"
+    r"hermes\s+plugins?\s+(?:disable|remove|uninstall)\s+" + _P + r"|"
     r"hermes\s+config\s+(?:set|unset)\s+plugins\.entries\." + _P + r"|"
     r"hermes\s+" + _P + r"\s+(?:set|allow|clear)|"
-    r"(?:rm|rmdir|del|Remove-Item|mv|truncate)\b[^\n]{0,80}?(?:plugin-data[/\\]|plugins[/\\])" + _P
+    r"(?:" + _TAMPER_VERBS + r")\b[^\n]{0,120}?(?:plugin-data[/\\]|plugins[/\\])" + _P + r"|"
+    r"open\s*\([^)\n]{0,40}['\"][wa][^\n]{0,120}?(?:plugin-data[/\\]|plugins[/\\])" + _P + r"|"
+    r"(?:>>?|--output[= ])[^\n]{0,120}?(?:plugin-data[/\\]|plugins[/\\])" + _P
     + r")"
 )
+
+# `hermes config set plugins.entries.sentry...` is covered by the switch patterns; the equivalent
+# edit to Hermes' own config file has to be covered too, or the guardrail is one file edit away.
+# Both spellings count: the dotted key path, and the nested YAML the file actually holds.
+_CONFIG_PATH_RE = re.compile(r"(?i)[/\\](?:hermes|\.hermes)[/\\]config\.ya?ml$")
+_CONFIG_SENTRY_RE = re.compile(
+    r"(?i)(?:plugins\.entries\.\s*" + _P + r"|entries\s*:\s*" + _P + r")"
+)
+
+
+def _write_content(args: dict) -> str:
+    """Best-effort text a write would put on disk."""
+    return " ".join(
+        str(args.get(key))
+        for key in ("content", "new_string", "new_str", "text", "body", "line", "data")
+        if isinstance(args.get(key), str)
+    )
 
 # Path arguments for tools that write, and code arguments for tools that run code.
 _WRITE_PATH_KEYS = ("path", "file_path", "target", "destination")
 _CODE_KEYS = ("code", "script", "source", "command", "shell_command")
 
 
-def _tamper_target(tool: str, args: dict) -> str:
-    """Describe a call that targets this plugin's own controls, or return ``""``.
+def _tamper_target(tool: str, args: dict, touched: "sources.PathTouches | None" = None) -> str:
+    """Describe a call that *changes* this plugin's own controls, or return ``""``.
 
-    Only the *destination* of a write is inspected — never its content — so editing a file that
-    merely mentions the policy filename is not flagged.
+    Reading the installed copy is not tampering: hashing, listing or diffing the plugin directory is
+    ordinary work, and a plugin policing its own repository is the harshest test there is. Only the
+    destination of a write is inspected, never its content — so editing a file that merely mentions
+    the policy filename is not flagged either.
     """
     if not isinstance(args, dict):
         return ""
-    for key in _WRITE_PATH_KEYS:
-        value = args.get(key)
-        if isinstance(value, str) and value and _CONTROL_RE.search(value):
-            return value
+    writes = touched is None or bool(getattr(touched, "writes", False))
+
+    # A path argument is a target only when the call actually writes there.
+    if writes:
+        for key in _WRITE_PATH_KEYS:
+            value = args.get(key)
+            if isinstance(value, str) and value and _CONTROL_RE.search(value):
+                return value
+        destination = next(
+            (
+                args.get(key)
+                for key in _WRITE_PATH_KEYS
+                if isinstance(args.get(key), str) and args.get(key)
+            ),
+            "",
+        )
+        # Hermes' own config file, when the write targets this plugin's settings inside it. The
+        # `hermes config set` route is covered by the switch patterns; this is the same change by
+        # hand, and without it the guardrail is one file edit away.
+        if destination and _CONFIG_PATH_RE.search(str(destination)):
+            if _CONFIG_SENTRY_RE.search(_write_content(args)):
+                return str(destination)
+
+    # Shell text: the switch forms are mutations on their own; a control path needs a write verb.
     for key in _CODE_KEYS:
         value = args.get(key)
-        if isinstance(value, str) and value and (
-            _CONTROL_RE.search(value) or _SHELL_TAMPER_RE.search(value)
-        ):
+        if isinstance(value, str) and value and _SHELL_TAMPER_RE.search(value):
             return value
     return ""
 
@@ -349,10 +396,16 @@ def evaluate(
 
     matches: list[Decision] = []
 
-    # 1. Tampering with this plugin's own controls. Always evaluated, tainted or not.
+    egress = sources.egress_of(tool, args)
+    touched = sources.paths_of(tool, args, workspace=workspace or sources.workspace_of(args))
+    external = egress.external_hosts(allow_hosts) if egress.hosts else ()
+
+    # 1. Changing this plugin's own controls. Always evaluated, tainted or not. A *read* of the
+    #    installed copy is ordinary work, and `allow_paths` can grant a deliberate write — which is
+    #    how the plugin's own author deploys an update.
     if _rule_on("sentry_tamper", rules, tainted):
-        target = _tamper_target(tool, args)
-        if target:
+        target = _tamper_target(tool, args, touched)
+        if target and not _path_allowed(target, policy.get("allow_paths", ())):
             matches.append(
                 Decision(
                     action=rules["sentry_tamper"]["action"],
@@ -362,10 +415,6 @@ def evaluate(
                     severity="high",
                 )
             )
-
-    egress = sources.egress_of(tool, args)
-    touched = sources.paths_of(tool, args, workspace=workspace or sources.workspace_of(args))
-    external = egress.external_hosts(allow_hosts) if egress.hosts else ()
 
     allow_paths = policy.get("allow_paths", ())
     sensitive = tuple(p for p in touched.sensitive if not _path_allowed(p, allow_paths))

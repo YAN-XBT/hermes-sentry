@@ -725,6 +725,69 @@ def test_cli_flags_are_not_read_as_uploads() -> None:
     ).action == "escalate"
 
 
+def test_tamper_rule_ignores_reads_of_the_installed_copy() -> None:
+    """Hashing, listing or diffing the installed plugin dir is ordinary work, not tampering."""
+    _reset()
+    installed = "C:/Users/x/AppData/Local/hermes/plugins/sentry"
+    assert _decide("terminal", {"command": f"sha256sum {installed}/sources.py"}, tainted=False).action == "allow"
+    assert _decide("terminal", {"command": f"ls -la {installed}"}, tainted=False).action == "allow"
+    assert _decide("terminal", {"command": f"diff {installed}/policy.py ../sentry/policy.py"}, tainted=False).action == "allow"
+    assert _decide("read_file", {"path": f"{installed}/policy.py"}, tainted=False).action == "allow"
+    assert _decide("search_files", {"pattern": "credential_read", "path": installed}, tainted=False).action == "allow"
+
+
+def test_tamper_rule_still_blocks_changes() -> None:
+    _reset()
+    installed = "C:/Users/x/AppData/Local/hermes/plugins/sentry"
+    data = "C:/Users/x/AppData/Local/hermes/plugin-data/sentry"
+    # the switches that loosen the leash
+    assert _decide("terminal", {"command": "hermes plugins disable sentry"}, tainted=False).action == "block"
+    assert _decide("terminal", {"command": "hermes plugins remove sentry"}, tainted=False).action == "block"
+    assert _decide("terminal", {"command": "hermes sentry clear"}, tainted=False).action == "block"
+    assert _decide("terminal", {"command": "hermes sentry allow evil.test"}, tainted=False).action == "block"
+    assert _decide(
+        "terminal", {"command": "hermes config set plugins.entries.sentry.settings.mode monitor"}, tainted=False
+    ).action == "block"
+    # a write to the installed code, the runtime policy, or the data dir
+    assert _decide("write_file", {"path": f"{installed}/policy.py", "content": "x"}, tainted=False).action == "block"
+    assert _decide("terminal", {"command": f"cp evil.py {installed}/policy.py"}, tainted=False).action == "block"
+    assert _decide("terminal", {"command": f"sed -i s/block/allow/ {installed}/policy.py"}, tainted=False).action == "block"
+    assert _decide("write_file", {"path": f"{data}/policy.yaml", "content": "x"}, tainted=False).action == "block"
+    assert _decide("patch", {"path": f"{installed}/sources.py", "old_string": "a", "new_string": "b"}, tainted=False).action == "block"
+    # and the same change made by hand in Hermes' own config
+    assert _decide(
+        "write_file",
+        {"path": "C:/Users/x/AppData/Local/hermes/config.yaml", "content": "plugins:\n  entries:\n    sentry:\n      settings:\n        mode: monitor"},
+        tainted=False,
+    ).action == "block"
+    # editing another plugin's entry in that file is fine
+    assert _decide(
+        "write_file",
+        {"path": "C:/Users/x/AppData/Local/hermes/config.yaml", "content": "plugins:\n  entries:\n    blender:\n      settings:\n        x: 1"},
+        tainted=False,
+    ).action == "allow"
+
+
+def test_tamper_rule_honours_an_explicit_grant() -> None:
+    """The author's own deploy works only after the human allow-lists the path."""
+    installed = "C:/Users/x/AppData/Local/hermes/plugins/sentry"
+    _reset()
+    assert _decide("terminal", {"command": f"cp sources.py {installed}/"}, tainted=False).action == "block"
+    assert _decide(
+        "terminal",
+        {"command": f"cp sources.py {installed}/"},
+        tainted=False,
+        policy=_policy(allow_paths=[installed]),
+    ).action == "allow"
+    # the grant is narrow: a different plugin dir is still protected
+    assert _decide(
+        "terminal",
+        {"command": "cp evil.py C:/Users/x/AppData/Local/hermes/plugins/sentry/policy.py"},
+        tainted=False,
+        policy=_policy(allow_paths=["C:/Users/x/AppData/Local/hermes/plugin-data/sentry"]),
+    ).action == "block"
+
+
 def test_sentry_tamper_is_blocked() -> None:
     _reset()
     for args in (

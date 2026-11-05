@@ -165,9 +165,12 @@ is logged and the built-in defaults stay in force.
 - **`instruction_poison`** (`always`) — injection-shaped text being planted in one of those files,
   tainted or not. Fires at `instruction_poison_min_signals` (default 2) high-severity signals, so a
   document that quotes one example is fine and a payload is not.
-- **`sentry_tamper`** (`always`) — editing the live policy, disabling the plugin, or touching the
-  installed copy through any tool. The destination of a write is inspected, never its content, so
-  editing a file that merely mentions the policy filename is not flagged.
+- **`sentry_tamper`** (`always`) — *changing* the plugin's own controls: its live policy, the
+  installed copy, its data dir, `plugins disable`/`remove`, or its own settings inside Hermes'
+  config (dotted or YAML spelling). Only the destination of a write is inspected, never its content,
+  so editing a file that merely mentions the policy filename is not flagged — and neither is
+  *reading* the installed copy (a hash, a listing, a diff), which is ordinary work. Maintaining the
+  plugin yourself? Put the installed directory in `allow_paths` and deploys go through.
 
 Sensitive paths: `id_rsa`/`id_ed25519`/`id_ecdsa`, `.ssh/`, `.aws/`, `.kube/`, `.gnupg/`, `.env*`,
 `auth.json`, `credentials*`, `secrets.*`, `.git-credentials`, `.netrc`, `.npmrc`, `.pypirc`,
@@ -249,10 +252,10 @@ untrusted too.
 - **`escalate` is not a guarantee.** It hands the call to Hermes's approval gate, and with
   `approvals.mode: smart` the gate may auto-approve a call the auxiliary assessor judges low-risk.
   Where a call must never run, use `block`.
-- **The tamper rule is a speed bump, not a sandbox.** It matches the obvious routes — a path into
-  the installed copy, `plugins disable`, `config set` on the plugin's own settings — but a command
-  that obfuscates those strings can slip past a regex. A filesystem-level guard would need a core
-  hook this plugin does not have.
+- **The tamper rule is a speed bump, not a sandbox.** It matches the obvious routes — a write into
+  the installed copy, `plugins disable`/`remove`, `config set` on the plugin's own settings, the same
+  edit made by hand in `config.yaml` — but a command that obfuscates those strings can slip past a
+  regex. A filesystem-level guard would need a core hook this plugin does not have.
 - **One-shot `hermes chat -q` sessions in this build do not deliver plugin hook callbacks.** The
   plugin loads and its tools work, but `pre_tool_call` / `transform_tool_result` are never invoked,
   so enforcement is inert there. Verified with a probe on 0.22.7 (zero callback hits across a fetch
