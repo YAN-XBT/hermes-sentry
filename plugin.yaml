@@ -6,12 +6,14 @@ license: MIT
 requires_hermes: ">=0.22"
 description: >
   Provenance and taint tracking for tool results. Every tool result is stamped with where it came
-  from; content from untrusted sources (web fetches, MCP servers, files written from untrusted
-  content) is stripped of invisible unicode, wrapped in untrusted markers, and taints the session.
-  Once tainted, side-effecting tool calls — network egress, credential reads, writes outside the
-  workspace — are blocked or escalated to human approval with a receipt naming the exact source
-  that tainted the run. Deterministic enforcement at the tool boundary, which a prompt or skill
-  cannot do. Ships a receipts ledger, a dry-run policy tester and an optional Desktop pane.
+  from; content authored by a third party (web fetches, MCP servers, screenshots, images, and files
+  written from untrusted content) is stripped of invisible characters, wrapped in untrusted markers,
+  and taints the session. Once tainted, side-effecting tool calls are gated by a policy: credential
+  reads, and writes into files the agent reads as instructions (AGENTS.md, SKILL.md, hook handlers,
+  Hermes' own config), are refused; network egress and writes outside the workspace go to Hermes's
+  approval gate. Deterministic enforcement at the tool boundary, which a prompt or skill cannot do.
+  Ships a receipts ledger, a `hermes sentry` CLI with a dry-run policy tester, and a rule set where
+  every rule is tunable to allow, monitor, escalate or block.
 author: YAN-XBT
 homepage: https://github.com/YAN-XBT/hermes-sentry
 tags: [security, guardrails, prompt-injection, observability, taint]
