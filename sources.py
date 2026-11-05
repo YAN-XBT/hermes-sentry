@@ -137,7 +137,6 @@ _SEND_MARKERS = (
     "--data-binary",
     "--data-raw",
     "-d ",
-    "--json",
     "--form",
     "--upload-file",
     "--post-file",
@@ -156,8 +155,9 @@ _SEND_MARKERS = (
 )
 
 # curl/wget-only upload flags. Kept out of the generic list because `-T` is also ssh's
-# "no pseudo-terminal" flag and `-F` appears in unrelated tools.
-_CLIENT_UPLOAD_RE = re.compile(r"(?:^|\s)-[TF]\s")
+# "no pseudo-terminal" flag, `-F` is a field flag in other CLIs (`gh api -f`), and `--json` is a
+# response-format flag everywhere except curl, where it uploads a body.
+_CLIENT_UPLOAD_RE = re.compile(r"(?:^|\s)(?:-[TF]|--json)\s")
 
 _URL_HOST_RE = re.compile(r"https?://([^/\s\"'<>()\[\]\\]+)", re.I)
 
@@ -463,14 +463,15 @@ def _egress_from_command(command: str) -> Egress:
 # commit message, a log line, a comment — is not a read; `curl -d @key` is still caught by the
 # same-step exfiltration composite, which matches the path directly.
 _READ_VERB_RE = re.compile(
-    r"(?i)(?:^|[\s|;&(])(?:"
-    r"cat|bat|less|more|head|tail|type|strings|xxd|od|base64|tar|zip|unzip|"
+    r"(?i)(?:^|[\s|;&(,=\[{])(?:"
+    r"(?:cat|bat|less|more|head|tail|type|strings|xxd|od|base64|tar|zip|unzip|"
     r"grep|rg|awk|sed|cut|sort|uniq|diff|"
     r"cp|mv|scp|rsync|sftp|ftp|"
     r"curl|wget|nc|ncat|socat|"
     r"python\d?|py|node|deno|bun|ruby|perl|php|powershell|pwsh|cmd|"
-    r"get-content|gc|readfile|read_file|get_file|open\(|read\(|load\("
-    r")\b"
+    r"get-content|gc|readfile|read_file|get_file)\b"
+    r"|(?:open|read|load|read_text|read_bytes)\s*\("
+    r")"
 )
 
 
