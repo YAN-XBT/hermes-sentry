@@ -1,0 +1,518 @@
+"""Provenance classification: who authored this text, and what would a call reach?
+
+The taint mark is set by *source*, not by content. That is the whole point: a novel injection
+phrasing still gets gated because the turn that read a web page is gated, no matter what the page
+said. Signature scanning only explains the decision afterwards.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from pathlib import PurePath, PurePosixPath, PureWindowsPath
+
+# Tools whose result is authored by a third party. Exact names, plus the mcp__ prefix below.
+UNTRUSTED_TOOLS = frozenset(
+    {
+        "web_search",
+        "web_extract",
+        "web_fetch",
+        "browser_exec",
+        "vision_analyze",
+        "computer_use",
+        "read_window_below",
+        "drive_preview",
+    }
+)
+
+# Any tool from an MCP server is third-party code with third-party content.
+UNTRUSTED_PREFIXES = ("mcp__",)
+
+# Tools whose trust depends on *what* they touch: a path in the workspace is yours, a path in
+# ~/.ssh is not, and a file written earlier from untrusted content stays untrusted.
+PATH_GATED_TOOLS = frozenset({"read_file", "search_files", "terminal", "process_manage"})
+
+# Paths an injected instruction wants. Reading one of these while tainted is the exfil setup.
+SENSITIVE_PATH_RE = re.compile(
+    r"(?i)(?:"
+    r"id_rsa|id_ed25519|id_ecdsa|"
+    r"\.ssh[/\\]|\.aws[/\\]|\.kube[/\\]|\.gnupg[/\\]|\.docker[/\\]config\.json|"
+    r"\.git-credentials|\.netrc|\.npmrc|\.pypirc|\.pgpass|"
+    r"(?:^|[/\\\s\"'])\.env(?:\.|$|[/\\\s\"'])|"
+    r"auth\.json|credentials(?:\.json)?|secrets?\.(?:json|yaml|yml|toml|ini)|"
+    r"\.hermes[/\\]|hermes[/\\]config\.yaml|"
+    r"keychain|login\.keychain|Credential Manager|"
+    r"\.pem\b|\.pfx\b|\.p12\b|wallet\.dat|keystore"
+    r")"
+)
+
+# Files the agent itself reads as *instructions* in a later session: project rules, skills, hook
+# handlers, Hermes' own config, plugin manifests. A write here is not a data change, it is a change
+# to what the agent will do next time — the persistence half of a prompt injection.
+INSTRUCTION_PATH_RE = re.compile(
+    r"(?i)(?:"
+    r"\b(?:AGENTS|CLAUDE)\.md\b|"
+    r"\.hermes\.md\b|"
+    r"\bSKILL\.md\b|"
+    r"\.hermes[/\\]config\.ya?ml\b|"
+    r"[/\\]hermes[/\\]config\.ya?ml\b|"
+    r"[/\\]profiles[/\\][^/\\\s]+[/\\]config\.ya?ml\b|"
+    r"\.hermes[/\\](?:hooks|skills|cron)[/\\]"
+    r")"
+)
+
+# Manifests only matter where Hermes actually loads them: inside a Hermes home, an installed plugin
+# directory, or a plugin-data tree. A checkout of your own plugin repo is just source.
+_MANIFEST_RE = re.compile(r"(?i)\b(?:plugin|HOOK)\.ya?ml\b|\b(?:plugin|mcp)\.json\b")
+_HERMES_TREE_RE = re.compile(
+    r"(?i)(?:[/\\]\.hermes[/\\]|[/\\]hermes[/\\](?:plugins|plugin-data)[/\\]|[/\\](?:plugins|plugin-data)[/\\])"
+)
+
+
+def is_instruction_path(path: str) -> bool:
+    """True when writing ``path`` changes what the agent will read as instructions later."""
+    text = str(path or "")
+    if not text:
+        return False
+    if INSTRUCTION_PATH_RE.search(text):
+        return True
+    return bool(_MANIFEST_RE.search(text) and _HERMES_TREE_RE.search(text))
+
+
+_TOKEN_RE = re.compile(r"""[^\s"'`(){}\[\],;|&<>]{2,240}""")
+
+
+def _instruction_candidates(text: str) -> tuple[str, ...]:
+    """Filename-shaped tokens in a shell line or a code blob that count as instruction files."""
+    found: list[str] = []
+    for match in _TOKEN_RE.finditer(text or ""):
+        token = match.group(0).strip("'\"`")
+        if token and is_instruction_path(token):
+            found.append(token)
+    return tuple(dict.fromkeys(found))
+
+# Network clients that reach out. Interpreters are handled separately below: `python -c` is only a
+# network client when the code actually uses a network library, otherwise every dotted identifier in
+# a script becomes a "host" and every sensitive path a "send".
+_NET_CLIENTS = (
+    r"(?<![\w.\\-])(?:curl|wget|httpie|http|nc|ncat|netcat|scp|sftp|rsync|ftp|telnet|ssh|pwsh|"
+    r"powershell|Invoke-WebRequest|Invoke-RestMethod|iwr|irm)(?![\w\\-])"
+)
+
+_INTERPRETER_RE = r"(?:python[0-9.]*\s+-c|node\s+-e|perl\s+-e|ruby\s+-e)"
+_NETWORK_LIB_RE = (
+    r"(?:requests\.|urllib|http\.client|httpx\.|socket\.|urlopen|fetch\(|axios|"
+    r"Invoke-WebRequest|paramiko|ftplib|smtplib|boto3)"
+)
+
+_SEND_MARKERS = (
+    "--data",
+    "--data-binary",
+    "--data-raw",
+    "-d ",
+    "--json",
+    "-F ",
+    "--form",
+    "-T ",
+    "--upload-file",
+    "--post-file",
+    "-X POST",
+    "-XPUT",
+    "-X PUT",
+    "--method POST",
+    "requests.post",
+    "requests.put",
+    "urlopen(",
+    "httpx.post",
+    "fetch(",
+    "XMLHttpRequest",
+    "Method Post",
+    "-m POST",
+)
+
+_URL_HOST_RE = re.compile(r"https?://([^/\s\"'<>()\[\]]+)", re.I)
+
+# Bare-host detection is restricted to real TLDs. Without this, a dotted identifier in a script
+# (`sys.path.insert`) is read as a hostname, which then feeds the egress rules.
+_KNOWN_TLDS = frozenset(
+    """com net org edu gov int io co ai app dev sh xyz info biz me tv cc cloud site online store
+    tech space live news blog pro top page link email group team work world today life zone host
+    website press media agency digital studio design software systems network solutions services
+    uk de fr nl ru ua pl it es se no fi dk cz gr tr cn jp in br mx ar cl za au nz ca us test
+    example localhost internal lan""".split()
+)
+_BARE_HOST_RE = re.compile(
+    r"(?<![\w./-])((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:"
+    + "|".join(sorted(_KNOWN_TLDS))
+    + r"))(?::\d{1,5})?(?![\w.-])",
+    re.I,
+)
+
+# Local-only destinations: never an exfil channel worth gating.
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0", "host.docker.internal"})
+
+_MCP_TOOL_RE = re.compile(r"^mcp__([a-z0-9_.-]+?)__")
+
+# Shell command separators. `a; b` and `a | b` are two steps, and only a single step that both
+# names a sensitive path and reaches the network is the exfil composite.
+_SEGMENT_SPLIT_RE = re.compile(r"\|\||&&|[;\n|]")
+
+
+def segments_of(command: str) -> tuple[str, ...]:
+    """Split a shell line into its steps, so unrelated clauses are not read as one action."""
+    return tuple(s.strip() for s in _SEGMENT_SPLIT_RE.split(command or "") if s.strip())
+
+
+@dataclass(frozen=True)
+class Source:
+    """Where a piece of content came from."""
+
+    trust: str  # "trusted" | "untrusted" | "unknown"
+    label: str  # short human label, e.g. "web_fetch:evil.test"
+    tool: str
+    host: str = ""
+    reason: str = ""
+
+    @property
+    def is_untrusted(self) -> bool:
+        return self.trust == "untrusted"
+
+
+@dataclass
+class Egress:
+    """A network destination a tool call would reach."""
+
+    hosts: tuple[str, ...] = ()
+    sends_data: bool = False
+    detail: str = ""
+
+    def external_hosts(self, allow: frozenset[str]) -> tuple[str, ...]:
+        return tuple(
+            h for h in self.hosts if h.lower() not in _LOCAL_HOSTS and not _host_allowed(h, allow)
+        )
+
+
+@dataclass
+class PathTouches:
+    """Filesystem paths a tool call reads or writes, split by sensitivity."""
+
+    paths: tuple[str, ...] = ()
+    sensitive: tuple[str, ...] = ()
+    #: Sensitive paths that are *read* rather than written — what `credential_read` acts on.
+    sensitive_reads: tuple[str, ...] = ()
+    outside_workspace: tuple[str, ...] = ()
+    instruction: tuple[str, ...] = ()
+    #: Real write targets only — the sole thing that becomes a tainted artifact. A directory that a
+    #: command merely walks through must not turn every later command into untrusted content.
+    written_paths: tuple[str, ...] = ()
+    writes: bool = False
+    meta: dict = field(default_factory=dict)
+
+
+def _strip_port(host: str) -> str:
+    """Drop a ``:port`` suffix so allowlist entries match regardless of port (and so loopback
+    detection is not defeated by ``127.0.0.1:8099``)."""
+    host = (host or "").strip().lower()
+    if host.startswith("["):  # bracketed IPv6, e.g. [::1]:8099
+        return host.split("]", 1)[0].lstrip("[")
+    return host.split(":", 1)[0]
+
+
+def host_of(url: str) -> str:
+    match = _URL_HOST_RE.search(url or "")
+    return _strip_port(match.group(1).split("@")[-1]) if match else ""
+
+
+def _host_allowed(host: str, allow: frozenset[str]) -> bool:
+    host = host.lower()
+    for entry in allow:
+        entry = entry.lower().lstrip(".")
+        if host == entry or host.endswith("." + entry):
+            return True
+    return False
+
+
+def classify(tool_name: str, args: dict, *, workspace: str = "", tainted_artifact: str = "") -> Source:
+    """Classify a tool call's *result* provenance before it is appended to the conversation.
+
+    Only genuine third-party authorship taints: remote fetches, MCP servers, screens and images,
+    and files that were themselves written during a tainted turn (``tainted_artifact``). A plain
+    local file read is the user's own material — flagging those would taint every coding session
+    and gate work for no reason.
+    """
+    tool = (tool_name or "").strip()
+
+    mcp = _MCP_TOOL_RE.match(tool)
+    if mcp:
+        return Source("untrusted", f"{tool} (mcp:{mcp.group(1)})", tool, reason="third-party MCP server")
+
+    if tool in UNTRUSTED_TOOLS:
+        host = ""
+        for key in ("url", "href", "target", "query", "image_url", "path"):
+            value = args.get(key) if isinstance(args, dict) else None
+            if isinstance(value, str):
+                host = host or host_of(value)
+        label = f"{tool}:{host}" if host else tool
+        return Source("untrusted", label, tool, host=host, reason="content authored by a third party")
+
+    if tainted_artifact:
+        return Source(
+            "untrusted",
+            f"file:{_short(tainted_artifact)}",
+            tool,
+            reason=f"file written from untrusted content ({tainted_artifact})",
+        )
+
+    if tool in PATH_GATED_TOOLS:
+        # A shell command that reaches the network returns third-party content, exactly like a
+        # fetch tool does. Reading a local file does not — flagging those would taint every
+        # coding session and gate work for no reason.
+        egress = egress_of(tool, args)
+        if egress.hosts:
+            host = egress.hosts[0]
+            return Source(
+                "untrusted",
+                f"{tool}:{host}",
+                tool,
+                host=host,
+                reason="content fetched from the network by a shell command",
+            )
+        return Source("trusted", tool, tool)
+
+    if tool in {"write_file", "patch"}:
+        return Source("trusted", tool, tool)
+
+    if not tool:
+        return Source("unknown", "unknown", tool, reason="no tool name supplied")
+
+    return Source("unknown", tool, tool, reason="tool not in the trust table")
+
+
+def _short(path: str, limit: int = 60) -> str:
+    path = str(path).replace("\\", "/")
+    return path if len(path) <= limit else "…" + path[-limit:]
+
+
+def _paths_in(args: dict) -> tuple[str, ...]:
+    """Best-effort path extraction from tool arguments (``path``, ``file_path``, or a shell line)."""
+    if not isinstance(args, dict):
+        return ()
+    found: list[str] = []
+    for key in ("path", "file_path", "paths", "target", "directory", "cwd", "glob"):
+        value = args.get(key)
+        if isinstance(value, str) and value:
+            found.append(value)
+        elif isinstance(value, (list, tuple)):
+            found.extend(str(v) for v in value if isinstance(v, str) and v)
+    command = args.get("command")
+    if isinstance(command, str) and command:
+        found.extend(_paths_from_command(command))
+    return tuple(dict.fromkeys(found))
+
+
+_PATH_TOKEN_RE = re.compile(r"""(?:^|[\s"'=<>|(,@])((?:~|\.{1,2}|[A-Za-z]:|[\\/])[^\s"'<>|;)]{1,240})""")
+
+# Output targets in a shell line: a redirect, `-o`, `--output`, or `tee`. Only these count as a
+# write for taint propagation.
+_REDIRECT_RE = re.compile(
+    r"""(?:>>?|--output[= ]|--outfile[= ]|-o\s|tee\s+(?:-a\s+)?)\s*("?)([^\s"'|;&><]+)\1"""
+)
+
+# Destinations that are not a write: the `2>&1` idiom (already excluded by the char class) and the
+# null sinks. Treating these as writes gated most real shell commands in a tainted session.
+_NULL_TARGETS = frozenset({"/dev/null", "nul", "nul:", "$null", "/dev/stdout", "/dev/stderr"})
+
+# Verbs that change the filesystem without a redirect.
+_DESTRUCTIVE_RE = re.compile(r"\b(?:rm|rmdir|mv|cp|install|truncate)\b|\bsed\s+-i\b", re.I)
+
+# Code-bearing tools write without a path argument, so the code text is inspected for a write verb
+# before any filename in it is treated as a destination.
+_CODE_WRITE_RE = re.compile(
+    r"(?i)(?:open\s*\([^)\n]{0,120}['\"][wax]|write_text|write_bytes|shutil\.|"
+    r"os\.(?:remove|rename|replace|unlink|makedirs)|subprocess|os\.system|popen|"
+    r"\.write\(|>>?\s*\S)"
+)
+
+
+def _redirect_targets(command: str) -> tuple[str, ...]:
+    """Real output targets only. ``2>&1``, ``>/dev/null`` and friends write nothing."""
+    targets = (m.group(2) for m in _REDIRECT_RE.finditer(command or ""))
+    return tuple(dict.fromkeys(t for t in targets if t.lower() not in _NULL_TARGETS))
+
+
+def _paths_from_command(command: str) -> list[str]:
+    return [m.group(1) for m in _PATH_TOKEN_RE.finditer(command or "")]
+
+
+def _inside(path: str, workspace: str) -> bool:
+    try:
+        if re.match(r"^[A-Za-z]:[\\/]", path) or path.startswith("\\\\"):
+            p = PureWindowsPath(path)
+        elif path.startswith("~") or path.startswith("/"):
+            p = PurePosixPath(path.replace("\\", "/"))
+        else:
+            return True  # relative path: assume it resolves inside the workspace
+        w = PureWindowsPath(workspace) if re.match(r"^[A-Za-z]:[\\/]", workspace) else PurePosixPath(
+            workspace.replace("\\", "/")
+        )
+        return p == w or w in p.parents
+    except Exception:
+        return True  # never gate on a path we could not parse
+
+
+def egress_of(tool_name: str, args: dict) -> Egress:
+    """Network destinations a tool call would reach, and whether it sends data outward."""
+    tool = (tool_name or "").strip()
+    if not isinstance(args, dict):
+        args = {}
+
+    if tool in {"browser_exec", "web_fetch", "web_extract", "drive_preview", "computer_use"}:
+        blob = " ".join(str(args.get(k, "")) for k in ("url", "href", "target", "code", "command", "action"))
+        hosts = tuple(dict.fromkeys(_hosts_in(blob)))
+        sends = any(marker.lower() in blob.lower() for marker in ("post", "upload", "submit", "fill", "type", "click", "send"))
+        return Egress(hosts=hosts, sends_data=sends, detail="browser/web navigation")
+
+    if tool == "terminal":
+        command = str(args.get("command", ""))
+        return _egress_from_command(command)
+
+    if tool == "text_to_speech":
+        return Egress(detail="audio synthesis")
+
+    return Egress()
+
+
+def _hosts_in(blob: str) -> list[str]:
+    hosts = [m.group(1).split("@")[-1] for m in _URL_HOST_RE.finditer(blob or "")]
+    if not hosts:
+        hosts = [m.group(1) for m in _BARE_HOST_RE.finditer(blob or "")]
+    return [_strip_port(h) for h in hosts if h]
+
+
+def _egress_from_command(command: str) -> Egress:
+    command = command or ""
+    lowered = command.lower()
+    real_client = bool(re.search(_NET_CLIENTS, command, re.I))
+    # An interpreter counts as a network client only when the code uses a network library.
+    interpreter = bool(re.search(_INTERPRETER_RE, command, re.I)) and bool(
+        re.search(_NETWORK_LIB_RE, command, re.I)
+    )
+    if not (real_client or interpreter):
+        return Egress()
+
+    hosts = tuple(dict.fromkeys(_hosts_in(command)))
+    sends = any(marker.lower() in lowered for marker in _SEND_MARKERS)
+    if not sends:
+        # A network client with a piped body (`| nc host`, `cat x | curl`) is a send too.
+        sends = bool(re.search(r"\|\s*(?:curl|nc|ncat|netcat|ssh|scp)", lowered))
+    if real_client and SENSITIVE_PATH_RE.search(command):
+        # A real network client with a sensitive path in the same command is a send, period.
+        sends = True
+    return Egress(hosts=hosts, sends_data=sends, detail="shell network client")
+
+
+def paths_of(tool_name: str, args: dict, *, workspace: str = "") -> PathTouches:
+    """Filesystem touches for the policy engine: which are sensitive, which leave the workspace."""
+    tool = (tool_name or "").strip()
+    if not isinstance(args, dict):
+        args = {}
+    if tool not in PATH_GATED_TOOLS and tool not in {
+        "write_file",
+        "patch",
+        "skill_manage",
+        "execute_code",
+    }:
+        return PathTouches()
+
+    paths = _paths_in(args)
+    sensitive = tuple(p for p in paths if SENSITIVE_PATH_RE.search(p))
+    outside = tuple(
+        p for p in paths if workspace and not _inside(p, workspace) and not p.startswith("~")
+    )
+    command = str(args.get("command", "")) if tool in PATH_GATED_TOOLS else ""
+    code = str(args.get("code") or args.get("script") or "") if tool == "execute_code" else ""
+
+    if tool in {"write_file", "patch", "skill_manage"}:
+        written = tuple(
+            value
+            for key in ("path", "file_path")
+            if isinstance(value := args.get(key), str) and value
+        )
+    elif command:
+        written = _redirect_targets(command)
+    elif code and _CODE_WRITE_RE.search(code):
+        written = _instruction_candidates(code)
+    else:
+        written = ()
+
+    writes = tool in {"write_file", "patch", "skill_manage"} or bool(written) or (
+        bool(command) and bool(_DESTRUCTIVE_RE.search(command))
+    )
+
+    written_set = {w.replace("\\", "/").lower() for w in written}
+    sensitive_reads = tuple(
+        p for p in sensitive if p.replace("\\", "/").lower() not in written_set
+    )
+
+    instruction: tuple[str, ...] = ()
+    if writes:
+        # A shell redirect names its target without any path syntax, and code writes name it inside
+        # a string literal, so the raw text is scanned too — but only for writes, so reading those
+        # files is never gated.
+        found = [*_instruction_candidates(command), *_instruction_candidates(code)]
+        found += [c for c in (*paths, *written) if is_instruction_path(c)]
+        instruction = tuple(dict.fromkeys(found))
+
+    return PathTouches(
+        paths=tuple(paths),
+        sensitive=sensitive,
+        sensitive_reads=sensitive_reads,
+        outside_workspace=outside,
+        instruction=instruction,
+        written_paths=written,
+        writes=writes,
+    )
+
+
+def written_text(args: dict) -> str:
+    """The text a write tool is about to put on disk. Empty for tools that write nothing."""
+    if not isinstance(args, dict):
+        return ""
+    parts = [args.get(key) for key in ("content", "new_string", "file_content")]
+    return "\n".join(p for p in parts if isinstance(p, str) and p)
+
+
+def workspace_of(args: dict) -> str:
+    """The working directory a call is anchored to, if the tool declares one."""
+    if isinstance(args, dict):
+        for key in ("workdir", "cwd", "directory"):
+            value = args.get(key)
+            if isinstance(value, str) and value:
+                return value
+    return ""
+
+
+def describe_sources(sources: dict) -> str:
+    """Render taint sources for a banner or receipt: ``web_fetch:evil.test (2)``."""
+    parts = []
+    for label, info in sorted(sources.items()):
+        count = info.get("count", 1) if isinstance(info, dict) else 1
+        parts.append(f"{label}×{count}" if count > 1 else label)
+    return ", ".join(parts)
+
+
+__all__ = [
+    "Source",
+    "Egress",
+    "PathTouches",
+    "classify",
+    "egress_of",
+    "paths_of",
+    "written_text",
+    "host_of",
+    "workspace_of",
+    "describe_sources",
+    "SENSITIVE_PATH_RE",
+    "UNTRUSTED_TOOLS",
+    "UNTRUSTED_PREFIXES",
+]

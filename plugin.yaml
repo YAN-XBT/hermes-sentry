@@ -1,0 +1,41 @@
+name: sentry
+version: "0.1.0"
+manifest_version: 2
+api_version: 1
+license: MIT
+requires_hermes: ">=0.22"
+description: >
+  Provenance and taint tracking for tool results. Every tool result is stamped with where it came
+  from; content from untrusted sources (web fetches, MCP servers, files written from untrusted
+  content) is stripped of invisible unicode, wrapped in untrusted markers, and taints the session.
+  Once tainted, side-effecting tool calls — network egress, credential reads, writes outside the
+  workspace — are blocked or escalated to human approval with a receipt naming the exact source
+  that tainted the run. Deterministic enforcement at the tool boundary, which a prompt or skill
+  cannot do. Ships a receipts ledger, a dry-run policy tester and an optional Desktop pane.
+author: YAN-XBT
+homepage: https://github.com/YAN-XBT/hermes-sentry
+tags: [security, guardrails, prompt-injection, observability, taint]
+provides_tools:
+  - sentry_status
+  - sentry_receipts
+provides_hooks:
+  - transform_tool_result
+  - pre_tool_call
+  - pre_llm_call
+config_schema:
+  mode:
+    type: str
+    default: enforce
+    description: "enforce = block/escalate per policy. monitor = receipts only, never interfere. off = disable enforcement."
+  taint_ttl_seconds:
+    type: int
+    default: 1800
+    description: "How long a taint mark stays live for a session, in seconds."
+  policy_file:
+    type: str
+    default: ""
+    description: "Path to a policy YAML/JSON. Empty = the plugin data dir's own file if present, else built-in defaults."
+  debug_trace:
+    type: bool
+    default: false
+    description: "Record what every hook was handed and what it decided (kind=trace rows in the receipts ledger)."
