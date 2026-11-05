@@ -24,6 +24,7 @@ provides_hooks:
   - transform_tool_result
   - pre_tool_call
   - pre_llm_call
+  - subagent_start
 config_schema:
   mode:
     type: str

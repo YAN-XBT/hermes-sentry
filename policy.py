@@ -417,14 +417,19 @@ def evaluate(
             )
         )
 
-    # 5. Writes that leave the workspace from a tainted session.
-    if _rule_on("write_outside", rules, tainted) and touched.writes and touched.outside_workspace:
+    # 5. Writes that leave the workspace from a tainted session. Scratch space does not count.
+    outside = tuple(
+        p
+        for p in touched.outside_workspace
+        if not _path_allowed(p, allow_paths) and not sources.is_temp_path(p)
+    )
+    if _rule_on("write_outside", rules, tainted) and touched.writes and outside:
         matches.append(
             Decision(
                 action=rules["write_outside"]["action"],
                 rule="write_outside",
                 reason="write outside the workspace from a session carrying untrusted content",
-                detail=", ".join(touched.outside_workspace),
+                detail=", ".join(outside),
                 severity="medium",
             )
         )
@@ -499,6 +504,11 @@ def _rule_on(name: str, rules: dict, tainted: bool) -> bool:
 def _clip(text: str, limit: int = 240) -> str:
     text = " ".join(str(text).split())
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def action_rank(action: str) -> int:
+    """Numeric severity of an action, for comparing several decisions."""
+    return _SEVERITY_ORDER.get(str(action), 0)
 
 
 def _same_step_exfil(tool: str, args: dict, sensitive) -> str:

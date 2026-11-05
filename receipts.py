@@ -16,6 +16,8 @@ import time
 from collections import deque
 from typing import Any
 
+from . import sanitize
+
 logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "sentry"
@@ -94,8 +96,8 @@ def record(
         "rule": rule,
         "action": action,
         "severity": severity,
-        "sources": sources,
-        "detail": str(detail)[:2000],
+        "sources": sanitize.redact_secrets(sources),
+        "detail": sanitize.redact_secrets(str(detail))[:2000],
     }
     try:
         with _lock:

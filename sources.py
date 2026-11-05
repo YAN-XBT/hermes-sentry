@@ -38,13 +38,40 @@ SENSITIVE_PATH_RE = re.compile(
     r"id_rsa|id_ed25519|id_ecdsa|"
     r"\.ssh[/\\]|\.aws[/\\]|\.kube[/\\]|\.gnupg[/\\]|\.docker[/\\]config\.json|"
     r"\.git-credentials|\.netrc|\.npmrc|\.pypirc|\.pgpass|"
-    r"(?:^|[/\\\s\"'])\.env(?:\.|$|[/\\\s\"'])|"
+    r"(?:^|[/\\\s\"'])\.env(?!\.(?:example|sample|template|dist|md|rst|txt))(?:\.|$|[/\\\s\"'])|"
     r"auth\.json|credentials(?:\.json)?|secrets?\.(?:json|yaml|yml|toml|ini)|"
     r"\.hermes[/\\]|hermes[/\\]config\.yaml|"
     r"keychain|login\.keychain|Credential Manager|"
     r"\.pem\b|\.pfx\b|\.p12\b|wallet\.dat|keystore"
     r")"
 )
+
+# A sensitive directory on its own is a listing, not a credential. Reading inside it is not.
+_SENSITIVE_DIR_ROOTS = (
+    "~/.ssh",
+    "~/.aws",
+    "~/.kube",
+    "~/.gnupg",
+    "/.ssh",
+    "/.aws",
+    "/.kube",
+    "/.gnupg",
+    ".hermes",
+    "/.hermes",
+)
+
+
+def is_sensitive_path(path: str) -> bool:
+    """True when ``path`` names material an injected instruction would want to read.
+
+    ``ls ~/.ssh/`` lists a directory and is allowed; ``cat ~/.ssh/id_rsa`` is not.
+    """
+    text = str(path or "").strip()
+    if not text or not SENSITIVE_PATH_RE.search(text):
+        return False
+    stripped = text.rstrip("/\\").replace("\\", "/").lower()
+    return not any(stripped.endswith(root) for root in _SENSITIVE_DIR_ROOTS)
+
 
 # Files the agent itself reads as *instructions* in a later session: project rules, skills, hook
 # handlers, Hermes' own config, plugin manifests. A write here is not a data change, it is a change
@@ -111,9 +138,7 @@ _SEND_MARKERS = (
     "--data-raw",
     "-d ",
     "--json",
-    "-F ",
     "--form",
-    "-T ",
     "--upload-file",
     "--post-file",
     "-X POST",
@@ -130,7 +155,11 @@ _SEND_MARKERS = (
     "-m POST",
 )
 
-_URL_HOST_RE = re.compile(r"https?://([^/\s\"'<>()\[\]]+)", re.I)
+# curl/wget-only upload flags. Kept out of the generic list because `-T` is also ssh's
+# "no pseudo-terminal" flag and `-F` appears in unrelated tools.
+_CLIENT_UPLOAD_RE = re.compile(r"(?:^|\s)-[TF]\s")
+
+_URL_HOST_RE = re.compile(r"https?://([^/\s\"'<>()\[\]\\]+)", re.I)
 
 # Bare-host detection is restricted to real TLDs. Without this, a dotted identifier in a script
 # (`sys.path.insert`) is read as a hostname, which then feeds the egress rules.
@@ -322,6 +351,21 @@ _REDIRECT_RE = re.compile(
 # null sinks. Treating these as writes gated most real shell commands in a tainted session.
 _NULL_TARGETS = frozenset({"/dev/null", "nul", "nul:", "$null", "/dev/stdout", "/dev/stderr"})
 
+# Scratch space. Writing there from a tainted session is normal work, not worth a prompt.
+_TEMP_MARKERS = (
+    "/tmp/",
+    "/var/tmp/",
+    "/private/tmp/",
+    "/temp/",
+    "/appdata/local/temp/",
+    "/cache/scratch/",
+)
+
+
+def is_temp_path(path: str) -> bool:
+    text = str(path or "").replace("\\", "/").lower()
+    return any(marker in text for marker in _TEMP_MARKERS)
+
 # Verbs that change the filesystem without a redirect.
 _DESTRUCTIVE_RE = re.compile(r"\b(?:rm|rmdir|mv|cp|install|truncate)\b|\bsed\s+-i\b", re.I)
 
@@ -402,6 +446,10 @@ def _egress_from_command(command: str) -> Egress:
 
     hosts = tuple(dict.fromkeys(_hosts_in(command)))
     sends = any(marker.lower() in lowered for marker in _SEND_MARKERS)
+    if not sends and real_client:
+        sends = bool(_CLIENT_UPLOAD_RE.search(command)) and bool(
+            re.search(r"(?:curl|wget)", command, re.I)
+        )
     if not sends:
         # A network client with a piped body (`| nc host`, `cat x | curl`) is a send too.
         sends = bool(re.search(r"\|\s*(?:curl|nc|ncat|netcat|ssh|scp)", lowered))
@@ -409,6 +457,37 @@ def _egress_from_command(command: str) -> Egress:
         # A real network client with a sensitive path in the same command is a send, period.
         sends = True
     return Egress(hosts=hosts, sends_data=sends, detail="shell network client")
+
+
+# Commands that can actually read a file. A shell line that merely *names* a credential path — in a
+# commit message, a log line, a comment — is not a read; `curl -d @key` is still caught by the
+# same-step exfiltration composite, which matches the path directly.
+_READ_VERB_RE = re.compile(
+    r"(?i)(?:^|[\s|;&(])(?:"
+    r"cat|bat|less|more|head|tail|type|strings|xxd|od|base64|tar|zip|unzip|"
+    r"grep|rg|awk|sed|cut|sort|uniq|diff|"
+    r"cp|mv|scp|rsync|sftp|ftp|"
+    r"curl|wget|nc|ncat|socat|"
+    r"python\d?|py|node|deno|bun|ruby|perl|php|powershell|pwsh|cmd|"
+    r"get-content|gc|readfile|read_file|get_file|open\(|read\(|load\("
+    r")\b"
+)
+
+
+def _reads_what_it_names(tool: str, args: dict) -> bool:
+    """True when the call is a file tool, or a shell line that uses a command able to read a file.
+
+    File tools pass their target as an argument, so the path *is* the read. Shell text is different:
+    ``cat ~/.ssh/id_rsa`` reads, while ``git commit -m "stop reading .env"`` only mentions one.
+    """
+    text = ""
+    if tool in PATH_GATED_TOOLS:
+        text = str(args.get("command") or "")
+    elif tool in {"execute_code", "process_manage"}:
+        text = str(args.get("code") or args.get("script") or args.get("data") or "")
+    if not text.strip():
+        return True
+    return bool(_READ_VERB_RE.search(text))
 
 
 def paths_of(tool_name: str, args: dict, *, workspace: str = "") -> PathTouches:
@@ -425,7 +504,9 @@ def paths_of(tool_name: str, args: dict, *, workspace: str = "") -> PathTouches:
         return PathTouches()
 
     paths = _paths_in(args)
-    sensitive = tuple(p for p in paths if SENSITIVE_PATH_RE.search(p))
+    sensitive = tuple(
+        p for p in paths if is_sensitive_path(p) and _reads_what_it_names(tool, args)
+    )
     outside = tuple(
         p for p in paths if workspace and not _inside(p, workspace) and not p.startswith("~")
     )

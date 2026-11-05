@@ -48,6 +48,7 @@ no rule fires. Enforcement only starts once third-party content has entered the 
 | `transform_tool_result` hook | Stamps untrusted results, removes hidden characters, taints the session |
 | `pre_tool_call` hook | Evaluates the policy; returns `block`, `approve` (human gate) or nothing |
 | `pre_llm_call` hook | Tells the model, once per turn, that untrusted content is live |
+| `subagent_start` hook | Carries the taint into a subagent, which runs under its own session id |
 | `sentry_status` tool | Taint state, policy in force, receipt tallies (read-only) |
 | `sentry_receipts` tool | Recent decisions with the source that caused them (read-only) |
 | `hermes sentry` CLI | `status`, `where`, `policy`, `receipts`, `test`, `explain`, `clear`, `allow`, `export` |
@@ -175,9 +176,10 @@ Sensitive paths: `id_rsa`/`id_ed25519`/`id_ecdsa`, `.ssh/`, `.aws/`, `.kube/`, `
 ## Receipts
 
 Every decision is written to `<hermes home>/plugin-data/<name>/receipts.db` (SQLite, WAL), which
-survives `hermes plugins update` and follows the active profile. If that storage is unavailable the
-ledger degrades to an in-memory ring buffer — a missing receipt is a bug, a crash on the tool path
-would be an outage.
+survives `hermes plugins update` and follows the active profile. Detail strings are run through a
+redactor first, so a receipt never becomes a second copy of a token that happened to be in the call.
+If that storage is unavailable the ledger degrades to an in-memory ring buffer — a missing receipt is
+a bug, a crash on the tool path would be an outage.
 
 ```bash
 hermes sentry status                      # mode, policy source, tainted sessions, tallies
@@ -200,6 +202,15 @@ path to its own guardrails. They are CLI actions a person runs.
 and Hermes fails it closed on error or timeout. sentry therefore keeps the callback short, allocation
 light, and never lets an exception escape: on failure in a tainted session the call is refused
 rather than run unchecked; in a clean session it steps aside.
+
+**Wrappers are unwrapped.** A call is evaluated as the call it really makes. `tool_call` dispatches
+another tool, `execute_code` runs code that can reach the network or write a file, and
+`process_manage` types into a running shell — each is evaluated as the call it actually is, so
+routing a dangerous action through a wrapper does not skip the policy. The strongest verdict wins.
+
+**Taint follows the work.** A subagent runs under its own session id, so the parent's mark does not
+reach it by itself — and a subagent is exactly what an injected instruction would ask for to do the
+work somewhere the gate is not watching. `subagent_start` copies the mark to the child.
 
 **Fail-closed, with a way out.** If sentry cannot sanitize a result it withholds it (and taints the
 session) instead of passing it through as trusted text. `on_error: passthrough` and `mode: monitor`
@@ -227,6 +238,14 @@ untrusted too.
   docs, then save what you learned as a skill" is refused when the session touched the web. That is
   the intended trade (a skill written from third-party content is exactly the persistence vector),
   and `allow_paths: [<your skills dir>]` is the documented escape hatch.
+- **Persistence through the tool surface is not gated.** A tainted session can still write a standing
+  instruction with the `memory` tool, or create a cron job, without a rule firing — the
+  `instruction_write` rule covers *files*, not those APIs. Deliberate scope for this release, and the
+  next thing to add.
+- **What is deliberately not a finding.** Listing a sensitive directory (`ls ~/.ssh/`) is allowed —
+  a directory is not a credential; reading inside it is. `.env.example` / `.env.sample` and other
+  templates are not secrets; `.env` and `.env.local` are. Writes into scratch space (`/tmp`,
+  `%TEMP%`, the Hermes cache dir) do not raise the outside-the-workspace prompt.
 - **`escalate` is not a guarantee.** It hands the call to Hermes's approval gate, and with
   `approvals.mode: smart` the gate may auto-approve a call the auxiliary assessor judges low-risk.
   Where a call must never run, use `block`.

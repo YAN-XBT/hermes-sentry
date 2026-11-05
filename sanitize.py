@@ -280,6 +280,25 @@ def normalize_whitespace(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text)
 
 
+_SECRET_INLINE_RE = re.compile(
+    r"(?i)(?:"
+    r"(?:api[_-]?key|apikey|password|passwd|secret|token|authorization)\s*[:=]\s*"
+    r"(?:bearer\s+)?[^\s,;\"']+|"
+    r"bearer\s+[A-Za-z0-9._\-]{8,}|"
+    r"(?:sk|pk|ghp|gho|ghs|github_pat|xox[baprs])[-_][A-Za-z0-9_\-]{10,}"
+    r")"
+)
+
+
+def redact_secrets(text: str) -> str:
+    """Strip credential-shaped substrings.
+
+    Applied before anything reaches the receipts ledger: a receipt records the *decision*, and must
+    not become a second copy of whatever secret happened to be in the call.
+    """
+    return _SECRET_INLINE_RE.sub("[redacted]", str(text or ""))
+
+
 def category_summary(text: str) -> dict[str, int]:
     """Count format characters by unicode category. Used by ``hermes sentry explain``."""
     counts: dict[str, int] = {}

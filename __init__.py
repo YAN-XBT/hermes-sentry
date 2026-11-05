@@ -299,6 +299,42 @@ def on_transform_tool_result(
         )
 
 
+def _call_variants(tool_name: str, args: dict) -> list[tuple[str, dict]]:
+    """Every call one tool invocation really makes.
+
+    ``tool_call`` dispatches another tool, ``execute_code`` runs code that can reach the network or
+    write a file, and ``process_manage`` types into a running shell. Each variant is evaluated as the
+    call it actually is, so routing a dangerous action through a wrapper does not skip the policy.
+    """
+    variants: list[tuple[str, dict]] = [(tool_name, args)]
+    if not isinstance(args, dict):
+        return variants
+
+    if tool_name == "tool_call":
+        calls = args.get("calls")
+        items = calls if isinstance(calls, list) else [args]
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            inner = item.get("name")
+            inner_args = item.get("arguments")
+            if isinstance(inner, str) and inner and inner != tool_name:
+                variants.append((inner, inner_args if isinstance(inner_args, dict) else {}))
+
+    elif tool_name == "execute_code":
+        code = args.get("code") or args.get("script")
+        if isinstance(code, str) and code:
+            variants.append(("terminal", {"command": code}))
+
+    elif tool_name == "process_manage":
+        payload = args.get("data")
+        action = str(args.get("action") or "").lower()
+        if isinstance(payload, str) and payload and action in {"submit", "write"}:
+            variants.append(("terminal", {"command": payload}))
+
+    return variants
+
+
 def on_pre_tool_call(
     tool_name: str = "",
     args: Any = None,
@@ -319,52 +355,63 @@ def on_pre_tool_call(
         store = runtime.store()
         tainted = store.is_tainted(session)
         workspace = runtime.workspace()
-        touched = sources.paths_of(tool_name, args, workspace=workspace)
-
-        if tainted and touched.written_paths:
-            # Taint propagation: what a tainted turn writes stays untrusted when it is read back.
-            for path in touched.written_paths:
-                store.note_artifact(session, path, "written during a tainted turn")
-
         snapshot = store.snapshot(session)
-        decision = policy_mod.evaluate(
-            tool_name=tool_name,
-            args=args,
-            policy=policy,
-            tainted=tainted,
-            taint_labels=store.labels(session),
-            taint_detail=sources.describe_sources(snapshot.get("sources", {})),
-            recent_sensitive=store.recent_sensitive(session) if tainted else "",
-            workspace=workspace,
-        )
+        taint_detail = sources.describe_sources(snapshot.get("sources", {}))
+        recent = store.recent_sensitive(session) if tainted else ""
 
-        if tainted and touched.sensitive:
-            # Recorded *after* the decision so a call is judged on its own arguments plus history,
-            # never on itself. Feeds the credential_exfil composite for later calls.
-            store.note_sensitive(session, touched.sensitive[0])
+        decisions: list[tuple[str, dict, policy_mod.Decision]] = []
+        for variant_tool, variant_args in _call_variants(tool_name, args):
+            touched = sources.paths_of(variant_tool, variant_args, workspace=workspace)
+            if tainted and touched.written_paths:
+                # Taint propagation: what a tainted turn writes stays untrusted when it is read back.
+                for path in touched.written_paths:
+                    store.note_artifact(session, path, "written during a tainted turn")
 
-        if decision.action == "allow":
+            decision = policy_mod.evaluate(
+                tool_name=variant_tool,
+                args=variant_args,
+                policy=policy,
+                tainted=tainted,
+                taint_labels=store.labels(session),
+                taint_detail=taint_detail,
+                recent_sensitive=recent,
+                workspace=workspace,
+            )
+
+            if tainted and touched.sensitive:
+                # Recorded *after* the decision so a call is judged on its own arguments plus
+                # history, never on itself. Feeds the credential_exfil composite for later calls.
+                store.note_sensitive(session, touched.sensitive[0])
+
+            if decision.interferes or decision.action == "monitor":
+                decisions.append((variant_tool, variant_args, decision))
+
+        if not decisions:
             return None
+
+        acting_tool, acting_args, decision = max(
+            decisions, key=lambda item: policy_mod.action_rank(item[2].action)
+        )
 
         receipts.record(
             kind="decision",
             action=decision.action,
             rule=decision.rule,
-            tool_name=tool_name,
+            tool_name=acting_tool if acting_tool == tool_name else f"{tool_name}->{acting_tool}",
             session_id=session,
             turn_id=turn_id,
             severity=decision.severity,
-            sources=sources.describe_sources(snapshot.get("sources", {})),
+            sources=taint_detail,
             detail=f"{decision.reason} · {decision.detail}".strip(" ·"),
         )
         if decision.action == "monitor":
             return None
         if decision.blocks:
-            return {"action": "block", "message": _block_message(decision, snapshot, tool_name)}
+            return {"action": "block", "message": _block_message(decision, snapshot, acting_tool)}
         return {
             "action": "approve",
-            "message": _approve_message(decision, snapshot, tool_name),
-            "rule_key": _rule_key(decision, args),
+            "message": _approve_message(decision, snapshot, acting_tool),
+            "rule_key": _rule_key(decision, acting_args),
         }
 
     except Exception as err:
@@ -420,6 +467,44 @@ def on_pre_llm_call(
 # --- registration -----------------------------------------------------------------------------
 
 
+def on_subagent_start(
+    parent_session_id: str = "",
+    child_session_id: str = "",
+    child_role: str = "",
+    **_: Any,
+) -> None:
+    """Carry taint into a subagent.
+
+    A child runs under its own session id, so the parent's mark does not reach it by itself — and a
+    subagent is exactly what an injected instruction would ask for to do the work somewhere the gate
+    is not watching. Inheriting the mark keeps the child gated.
+    """
+    try:
+        if not parent_session_id or not child_session_id:
+            return
+        store = runtime.store()
+        if not store.is_tainted(parent_session_id):
+            return
+        snapshot = store.snapshot(parent_session_id)
+        labels = sources.describe_sources(snapshot.get("sources", {})) or "parent session"
+        store.mark(
+            child_session_id,
+            label=f"inherited:{labels}",
+            tool="delegate_task",
+            reason="inherited from a tainted parent session",
+        )
+        receipts.record(
+            kind="provenance",
+            action="tag",
+            rule="taint_inherited",
+            tool_name="delegate_task",
+            session_id=child_session_id,
+            detail=f"parent {parent_session_id} was tainted; child {child_role or 'subagent'} marked",
+        )
+    except Exception as err:
+        logger.debug("sentry: subagent_start failed (%s)", err)
+
+
 def register(ctx: Any) -> None:
     """Called once by Hermes. Registers two tools, three hooks and one CLI tree."""
     runtime.bind(ctx)
@@ -440,6 +525,7 @@ def register(ctx: Any) -> None:
     ctx.register_hook("transform_tool_result", on_transform_tool_result)
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
     ctx.register_hook("pre_llm_call", on_pre_llm_call)
+    ctx.register_hook("subagent_start", on_subagent_start)
 
     try:
         ctx.register_cli_command(
