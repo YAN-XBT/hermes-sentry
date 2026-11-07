@@ -43,8 +43,9 @@ splitting the remaining days risks both entries.
 ## Submission checklist
 
 - [x] public repo — https://github.com/YAN-XBT/hermes-sentry
-- [x] catalog PR — NousResearch/hermes-agent#149412 (pin `564f6a8`)
-- [ ] Desktop console + fresh pin
+- [x] catalog PR — NousResearch/hermes-agent#149412 (pin `671c3e5`)
+- [x] Desktop console (pane, chip, ⌘K, backend, live feed) + fresh pin
+- [ ] live pass after a gateway restart (API routes + pane in the app)
 - [ ] demo video ≤ 90 s on X, tagging @NousResearch
 - [ ] submit both links: https://form.typeform.com/to/FwJLvOln
 - deadline: 5 PM EST, Nov 11

@@ -59,6 +59,12 @@ DEFAULT_POLICY: dict[str, Any] = {
         "instruction_poison": {"when": "always", "action": "block"},
         # Rewriting this plugin's own policy or disabling it.
         "sentry_tamper": {"when": "always", "action": "block"},
+        # A *script* written from a tainted session that both names a credential and sends data: the
+        # two-step attack, where step 2 is `python that_script.py` and no rule ever sees the key.
+        "content_exfil": {"when": "tainted", "action": "escalate"},
+        # Running a file this session pulled in from untrusted content — the payload path, where
+        # step 2 never names a credential on the command line.
+        "artifact_exec": {"when": "tainted", "action": "escalate"},
     },
     # A single quoted example is documentation; several high-severity signals in one write is a
     # payload. Tune to 1 for the strictest reading.
@@ -382,6 +388,7 @@ def evaluate(
     taint_detail: str = "",
     recent_sensitive: str = "",
     workspace: str = "",
+    executed_artifact: str = "",
 ) -> Decision:
     """Pick the strongest action any matching rule asks for.
 
@@ -528,6 +535,36 @@ def evaluate(
                 )
             )
 
+    # 9. A *script* written from a tainted session that both names a credential and sends data — the
+    #    two-step attack, where step 2 is `python that_script.py` and no rule ever sees the key on a
+    #    command line. Only script destinations count, so a document that quotes an exfil command is
+    #    not a payload.
+    if _rule_on("content_exfil", rules, tainted) and touched.writes:
+        payload = _content_payload(args)
+        if payload:
+            matches.append(
+                Decision(
+                    action=rules["content_exfil"]["action"],
+                    rule="content_exfil",
+                    reason="a written script that reads a credential and sends data",
+                    detail=payload,
+                    severity="high",
+                )
+            )
+
+    # 10. Running a file this session pulled in while tainted. The payload never has to appear on a
+    #     command line for the attack to work — the file was already downloaded by an earlier call.
+    if executed_artifact and _rule_on("artifact_exec", rules, tainted):
+        matches.append(
+            Decision(
+                action=rules["artifact_exec"]["action"],
+                rule="artifact_exec",
+                reason="running a file this session downloaded from untrusted content",
+                detail=executed_artifact,
+                severity="high",
+            )
+        )
+
     if not matches:
         return ALLOW
 
@@ -541,6 +578,21 @@ def evaluate(
             severity=best.severity,
         )
     return best
+
+
+def _content_payload(args: dict) -> str:
+    """Detail when the text a write would put on disk is itself an exfiltration script."""
+    path = next(
+        (
+            args.get(key)
+            for key in _WRITE_PATH_KEYS
+            if isinstance(args.get(key), str) and args.get(key)
+        ),
+        "",
+    )
+    if not path:
+        return ""
+    return sources.payload_in_content(str(path), _write_content(args))
 
 
 def _rule_on(name: str, rules: dict, tainted: bool) -> bool:

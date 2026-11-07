@@ -7,6 +7,7 @@ said. Signature scanning only explains the decision afterwards.
 
 from __future__ import annotations
 
+import base64
 import re
 from dataclasses import dataclass, field
 from pathlib import PurePath, PurePosixPath, PureWindowsPath
@@ -35,7 +36,7 @@ PATH_GATED_TOOLS = frozenset({"read_file", "search_files", "terminal", "process_
 # Paths an injected instruction wants. Reading one of these while tainted is the exfil setup.
 SENSITIVE_PATH_RE = re.compile(
     r"(?i)(?:"
-    r"id_rsa|id_ed25519|id_ecdsa|"
+    r"id_(?:rsa|ed25519|ecdsa|dsa)(?!\.pub)|"
     r"\.ssh[/\\]|\.aws[/\\]|\.kube[/\\]|\.gnupg[/\\]|\.docker[/\\]config\.json|"
     r"\.git-credentials|\.netrc|\.npmrc|\.pypirc|\.pgpass|"
     r"(?:^|[/\\\s\"'])\.env(?!\.(?:example|sample|template|dist|md|rst|txt))(?:\.|$|[/\\\s\"'])|"
@@ -70,6 +71,8 @@ def is_sensitive_path(path: str) -> bool:
     if not text or not SENSITIVE_PATH_RE.search(text):
         return False
     stripped = text.rstrip("/\\").replace("\\", "/").lower()
+    if stripped.endswith(".pub"):
+        return False  # a public key is public — `.ssh/` alone would otherwise make it sensitive
     return not any(stripped.endswith(root) for root in _SENSITIVE_DIR_ROOTS)
 
 
@@ -470,6 +473,7 @@ _READ_VERB_RE = re.compile(
     r"curl|wget|nc|ncat|socat|"
     r"python\d?|py|node|deno|bun|ruby|perl|php|powershell|pwsh|cmd|"
     r"get-content|gc|readfile|read_file|get_file)\b"
+    r"|git\s+(?:add|stage|show|diff|cat-file|restore|checkout)\b"
     r"|(?:open|read|load|read_text|read_bytes)\s*\("
     r")"
 )
@@ -489,6 +493,90 @@ def _reads_what_it_names(tool: str, args: dict) -> bool:
     if not text.strip():
         return True
     return bool(_READ_VERB_RE.search(text))
+
+
+# `powershell -enc <base64>` is the standard way to hide a payload from anything that reads the
+# command line: the line itself is noise. PowerShell encodes UTF-16LE; plain UTF-8 shows up too.
+_ENCODED_BLOB_RE = re.compile(r"(?i)(?:-enc|--encodedcommand|-encodedcommand)\s+([A-Za-z0-9+/=]{24,})")
+_PIPED_B64_RE = re.compile(r"(?i)base64\s+(?:-d|--decode)\s*<<<\s*['\"]?([A-Za-z0-9+/=]{24,})")
+
+# A written *script* is the two-step attack: step 1 writes the payload, step 2 runs it, and no rule
+# ever sees the credential on a command line. Only these destinations are treated that way — a
+# README that documents an exfil command is not a payload.
+_SCRIPT_EXT_RE = re.compile(
+    r"(?i)\.(?:py|pyw|sh|bash|zsh|ps1|psm1|bat|cmd|js|mjs|cjs|ts|rb|pl|php|vbs|wsf|jar|exe)$"
+)
+
+
+def decode_payloads(text: str) -> list[str]:
+    """Decoded forms of an obfuscated command line, newest-first order not guaranteed.
+
+    The caller evaluates each as its own call, so an encoded payload is judged by what it does
+    rather than by how it reads.
+    """
+    out: list[str] = []
+    if not text:
+        return out
+    for match in list(_ENCODED_BLOB_RE.finditer(text)) + list(_PIPED_B64_RE.finditer(text)):
+        blob = match.group(1)
+        padded = blob + "=" * (-len(blob) % 4)
+        for encoding in ("utf-16-le", "utf-8"):
+            try:
+                decoded = base64.b64decode(padded, validate=False).decode(encoding, "ignore")
+            except Exception:
+                continue
+            decoded = decoded.strip()
+            if len(decoded) >= 8 and decoded not in out:
+                out.append(decoded)
+    return out
+
+
+# Content is not a command line: in a list literal the flag sits next to a quote or a comma
+# (`['curl','-d','@key']`), so the command-line markers are too strict for file text.
+_CONTENT_SEND_RE = re.compile(
+    r"(?i)(?:"
+    r"(?:^|[\s,=(\[{])-{1,2}(?:d|F|T|data|data-binary|data-raw|json|form|upload-file|post-file)\b|"
+    r"requests\.(?:post|put)|httpx\.post|urlopen\(|urllib|fetch\(|"
+    r"Invoke-WebRequest|Invoke-RestMethod|\bcurl\b|\bwget\b|\bncat?\b|socat"
+    r")"
+)
+
+
+def payload_in_content(path: str, content: str) -> str:
+    """Detail string when a written script both names a credential and sends data, else ``""``."""
+    if not content or not _SCRIPT_EXT_RE.search(str(path or "")):
+        return ""
+    match = SENSITIVE_PATH_RE.search(content)
+    if not match:
+        return ""
+    if not _CONTENT_SEND_RE.search(content):
+        return ""
+    return f"{path} names {match.group(0)} and sends data"
+
+
+# What a shell line *runs*, as opposed to reads: an interpreter argument, `./script`, `cmd /c`.
+# Running a file this session pulled in while tainted is the payload path — step 2 never has to name
+# a credential on the command line for the attack to work.
+_EXEC_RE = re.compile(
+    r"(?i)(?:^|[\s|;&(])(?:python\d?|py|node|deno|bun|bash|sh|zsh|perl|ruby|php|pwsh|"
+    r"powershell(?:\s+-file)?|cmd\s+/c|source)\s+([^\s|;&)\"']+)"
+)
+_EXEC_BARE_RE = re.compile(r"(?:^|[\s|;&(])(\.{1,2}[/\\][^\s|;&)\"']+)")
+
+
+def executed_paths(tool_name: str, args: dict) -> tuple[str, ...]:
+    """Files a call would *run* rather than read."""
+    tool = (tool_name or "").strip()
+    text = ""
+    if tool in PATH_GATED_TOOLS:
+        text = str(args.get("command") or "")
+    elif tool in {"execute_code", "process_manage"}:
+        text = str(args.get("code") or args.get("script") or args.get("data") or "")
+    if not text:
+        return ()
+    found = [match.group(1) for match in _EXEC_RE.finditer(text)]
+    found += [match.group(1) for match in _EXEC_BARE_RE.finditer(text)]
+    return tuple(dict.fromkeys(path for path in found if path))
 
 
 def paths_of(tool_name: str, args: dict, *, workspace: str = "") -> PathTouches:

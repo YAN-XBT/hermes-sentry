@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import json
+import sys
 import uuid
 from typing import Any
 
@@ -305,6 +306,8 @@ def _broadcast(event: str, payload: dict | None = None) -> None:
     Fire-and-forget and optional by construction: with no Desktop client attached the core call is a
     logged no-op, and a host without the module simply gets nothing.
     """
+    if "tui_gateway.server" not in sys.modules:
+        return  # no gateway in this process: nothing is attached, and nothing to log
     try:
         from hermes_cli.plugin_events import broadcast_plugin_event
 
@@ -346,6 +349,22 @@ def _call_variants(tool_name: str, args: dict) -> list[tuple[str, dict]]:
         if isinstance(payload, str) and payload and action in {"submit", "write"}:
             variants.append(("terminal", {"command": payload}))
 
+    # An obfuscated payload (`powershell -enc <base64>`) reads as noise on the command line.
+    # Evaluate what it decodes to as its own call, so it is judged by what it does, not how it reads.
+    for variant_tool, variant_args in list(variants):
+        text = ""
+        if variant_tool == "terminal":
+            text = str(variant_args.get("command") or "")
+        elif variant_tool in {"execute_code", "process_manage"}:
+            text = str(
+                variant_args.get("code")
+                or variant_args.get("script")
+                or variant_args.get("data")
+                or ""
+            )
+        for decoded in sources.decode_payloads(text):
+            variants.append(("terminal", {"command": decoded}))
+
     return variants
 
 
@@ -381,6 +400,14 @@ def on_pre_tool_call(
                 for path in touched.written_paths:
                     store.note_artifact(session, path, "written during a tainted turn")
 
+            executed = ""
+            if tainted:
+                for path in sources.executed_paths(variant_tool, variant_args):
+                    label = store.artifact_label(session, path)
+                    if label:
+                        executed = f"{path} — {label}"
+                        break
+
             decision = policy_mod.evaluate(
                 tool_name=variant_tool,
                 args=variant_args,
@@ -390,6 +417,7 @@ def on_pre_tool_call(
                 taint_detail=taint_detail,
                 recent_sensitive=recent,
                 workspace=workspace,
+                executed_artifact=executed,
             )
 
             if tainted and touched.sensitive:

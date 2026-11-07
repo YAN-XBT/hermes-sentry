@@ -41,6 +41,8 @@ def _package() -> Any | None:
 
 def _broadcast(event: str, payload: dict | None = None) -> None:
     """Push to the desktop half over the gateway event stream. Never fatal."""
+    if "tui_gateway.server" not in sys.modules:
+        return  # no gateway in this process: nothing is attached to it
     try:
         from hermes_cli.plugin_events import broadcast_plugin_event
 
