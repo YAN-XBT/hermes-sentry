@@ -32,16 +32,8 @@ const ID = 'sentry'
 // Set in register(ctx). The components below only run after it, so this is populated by then.
 let api = null
 
-const RULES = [
-  'credential_exfil',
-  'credential_read',
-  'egress_send',
-  'write_outside',
-  'instruction_write',
-  'instruction_poison',
-  'sentry_tamper',
-  'delegate'
-]
+// The rule list comes from the backend, so a rule added to the policy shows up here without a
+// front-end change — a hardcoded list silently hid the last two.
 const ACTIONS = ['allow', 'monitor', 'escalate', 'block']
 
 const ACTION_TONE = {
@@ -167,7 +159,7 @@ function SentryPane() {
 
       jsx('div', { className: 'h-px bg-(--ui-stroke-secondary)' }),
       jsx('div', { className: 'font-medium', children: 'Rules' }),
-      ...RULES.map(rule =>
+      ...Object.keys(state?.rules ?? {}).map(rule =>
         jsxs(
           'div',
           {

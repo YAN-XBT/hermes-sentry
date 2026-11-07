@@ -103,7 +103,7 @@ _SHELL_TAMPER_RE = re.compile(
     r"hermes\s+" + _P + r"\s+(?:set|allow|clear)|"
     r"(?:" + _TAMPER_VERBS + r")\b[^\n]{0,120}?(?:plugin-data[/\\]|plugins[/\\])" + _P + r"|"
     r"open\s*\([^)\n]{0,40}['\"][wa][^\n]{0,120}?(?:plugin-data[/\\]|plugins[/\\])" + _P + r"|"
-    r"(?:>>?|--output[= ])[^\n]{0,120}?(?:plugin-data[/\\]|plugins[/\\])" + _P
+    r"(?:>>?|--output[= ])(?!/dev/null|/dev/stdout|/dev/stderr|nul\b|&\d)[^\n]{0,120}?(?:plugin-data[/\\]|plugins[/\\])" + _P
     + r")"
 )
 

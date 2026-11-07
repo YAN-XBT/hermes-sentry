@@ -263,18 +263,32 @@ def cmd_explain(args: Any) -> int:
 
 
 def cmd_clear(args: Any) -> int:
+    """Clear taint here, and ask the live process to clear its own.
+
+    Taint lives in the memory of whichever process is running the agent, and a shell command is a
+    different process with an empty store — so clearing locally is not enough. The request marker is
+    what actually reaches a running gateway.
+    """
     store = runtime.store()
-    if getattr(args, "all", False):
-        count = store.session_count()
-        store.reset()
-        print(f"sentry: cleared {count} session(s)")
-        return 0
+    every = bool(getattr(args, "all", False))
     session = getattr(args, "session", "") or ""
-    if not session:
+    if not every and not session:
         print("sentry: pass --session <id> or --all (see `hermes sentry status`)", file=sys.stderr)
         return 2
-    cleared = store.clear(session)
-    print(f"sentry: {'cleared' if cleared else 'nothing to clear for'} {session}")
+
+    if every:
+        count = store.session_count()
+        store.reset()
+    else:
+        count = 1 if store.clear(session) else 0
+
+    requested = runtime.request_clear("" if every else session)
+    print(f"sentry: cleared {count} session(s) in this process")
+    if requested:
+        print(
+            "sentry: a running gateway keeps its own taint in memory and will clear it on its next "
+            "tool call — the Sentry pane's Clear taint button does it immediately."
+        )
     return 0
 
 

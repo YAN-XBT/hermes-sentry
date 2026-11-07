@@ -8,6 +8,7 @@ same process-wide state.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -79,6 +80,58 @@ def invalidate_settings() -> None:
     """Force the next :func:`settings` call to re-read (used by the CLI after a write)."""
     global _settings_ts
     _settings_ts = 0.0
+
+
+_CLEAR_REQUEST = "clear.request"
+_CLEAR_MAX_AGE = 300.0  # a stale request must never clear a later session's taint
+
+
+def request_clear(session_id: str = "") -> bool:
+    """Leave a clear request for the process that actually holds the taint.
+
+    Taint lives in the memory of the process running the agent, so `hermes sentry clear` typed in a
+    shell cannot reach it — that command is its own process with its own empty store. The CLI leaves
+    this marker instead, and the next tool call in the live process consumes it.
+    """
+    data = data_dir()
+    if data is None:
+        return False
+    try:
+        Path(data).mkdir(parents=True, exist_ok=True)
+        (Path(data) / _CLEAR_REQUEST).write_text(
+            json.dumps({"ts": time.time(), "session_id": session_id or ""}), encoding="utf-8"
+        )
+        return True
+    except Exception as err:  # pragma: no cover - depends on host layout
+        logger.debug("sentry: cannot leave a clear request (%s)", err)
+        return False
+
+
+def consume_clear_request() -> dict:
+    """Apply a pending clear request. Returns ``{}`` when there was nothing to do."""
+    data = data_dir()
+    if data is None:
+        return {}
+    marker = Path(data) / _CLEAR_REQUEST
+    try:
+        if not marker.is_file():
+            return {}
+        payload = json.loads(marker.read_text(encoding="utf-8") or "{}")
+        marker.unlink()
+    except Exception:
+        return {}
+    try:
+        if time.time() - float(payload.get("ts") or 0) > _CLEAR_MAX_AGE:
+            return {}
+    except (TypeError, ValueError):
+        return {}
+    session_id = str(payload.get("session_id") or "")
+    if session_id:
+        cleared = 1 if _store.clear(session_id) else 0
+    else:
+        cleared = _store.session_count()
+        _store.reset()
+    return {"cleared": cleared, "session_id": session_id}
 
 
 def data_dir() -> Path | None:

@@ -67,6 +67,12 @@ that tries the same thing — `hermes sentry set`, the equivalent edit in `confi
 to this plugin's own API over loopback — is refused by `sentry_tamper`. The guardrail protects itself
 from the agent, not from you.
 
+Taint lives in the memory of the process running the agent, so `hermes sentry clear` typed in a shell
+is a *different* process with an empty store — it cannot reach a running gateway's state. It leaves a
+request marker instead, which the next tool call consumes: that is what makes the command do what it
+says. The pane's **Clear taint** button reaches the live state directly, and so does restarting the
+gateway.
+
 Nothing is patched, wrapped or rebound. Every decision is a return value on a documented hook.
 
 ## The demo
@@ -179,6 +185,13 @@ is logged and the built-in defaults stay in force.
 - **`instruction_poison`** (`always`) — injection-shaped text being planted in one of those files,
   tainted or not. Fires at `instruction_poison_min_signals` (default 2) high-severity signals, so a
   document that quotes one example is fine and a payload is not.
+- **`content_exfil`** (`tainted`) — a *script* written from a tainted session that both names a
+  credential and sends data: the two-step attack, where step 2 is `python that_script.py` and no rule
+  ever sees the key on a command line. A script whose every destination is a reserved name (`*.test`,
+  `example.com`, loopback) is an example, not a payload — nothing resolves there — so a security
+  fixture, or a document describing an attack, does not trip it.
+- **`artifact_exec`** (`tainted`) — running a file this session pulled in from untrusted content. The
+  same attack with a download as step 1, where the payload never appears on a command line at all.
 - **`sentry_tamper`** (`always`) — *changing* the plugin's own controls: its live policy, the
   installed copy, its data dir, `plugins disable`/`remove`, or its own settings inside Hermes'
   config (dotted or YAML spelling). Only the destination of a write is inspected, never its content,

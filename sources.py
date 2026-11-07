@@ -542,14 +542,36 @@ _CONTENT_SEND_RE = re.compile(
 )
 
 
+def _is_reserved_host(host: str) -> bool:
+    """True for names that cannot receive anything (RFC 2606 / 6761, plus loopback)."""
+    host = _strip_port(str(host or "")).lower().strip(".")
+    if host in ("127.0.0.1", "::1", "0.0.0.0", "localhost", "example.com", "example.org", "example.net"):
+        return True
+    return bool(re.search(r"(?:^|\.)(?:test|example|invalid|localhost|local|internal|lan|home)$", host))
+
+
+def _only_reserved_hosts(text: str) -> bool:
+    """True when every host named in the text is one that cannot receive data."""
+    hosts = [match.group(1) for match in _URL_HOST_RE.finditer(text)]
+    return bool(hosts) and all(_is_reserved_host(host) for host in hosts)
+
+
 def payload_in_content(path: str, content: str) -> str:
-    """Detail string when a written script both names a credential and sends data, else ``""``."""
+    """Detail string when a written script both names a credential and sends data, else ``""``.
+
+    A script that only ever sends to a reserved name (`*.test`, `example.com`, loopback) is an
+    example — a security fixture, or a document describing an attack — not a payload: nothing can be
+    exfiltrated to a host that does not resolve. That is the one principled way to tell an attack
+    from its description, and it is what stops the rule from flagging the tests for the rule.
+    """
     if not content or not _SCRIPT_EXT_RE.search(str(path or "")):
         return ""
     match = SENSITIVE_PATH_RE.search(content)
     if not match:
         return ""
     if not _CONTENT_SEND_RE.search(content):
+        return ""
+    if _only_reserved_hosts(content):
         return ""
     return f"{path} names {match.group(0)} and sends data"
 
