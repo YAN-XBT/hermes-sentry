@@ -1,4 +1,4 @@
-"""``hermes sentry …`` — the user's side of the plugin.
+"""``hermes taint-sentry …`` — the user's side of the plugin.
 
 Everything that can change a decision lives here rather than in a tool, so the model has no path to
 its own policy: it can read status and receipts, and that is all. Clearing taint, allowlisting a
@@ -19,11 +19,11 @@ _ACTION_MARK = {"block": "BLOCK", "escalate": "ESCALATE", "monitor": "MONITOR", 
 
 
 def setup_parser(subparser: Any) -> None:
-    """Build the ``hermes sentry`` argparse tree."""
+    """Build the ``hermes taint-sentry`` argparse tree."""
     subs = subparser.add_subparsers(dest="sentry_command")
 
     subs.add_parser("status", help="Taint state, policy in force and receipt tallies")
-    subs.add_parser("where", help="Where sentry keeps its policy, ledger and data")
+    subs.add_parser("where", help="Where taint-sentry keeps its policy, ledger and data")
 
     p_policy = subs.add_parser("policy", help="Show the effective policy and the trust tables")
     p_policy.add_argument("--json", action="store_true", help="Machine-readable output")
@@ -44,7 +44,7 @@ def setup_parser(subparser: Any) -> None:
     p_test.add_argument("--session", default="dry-run")
     p_test.add_argument("--json", action="store_true")
 
-    p_explain = subs.add_parser("explain", help="Show what sentry sees in a piece of text")
+    p_explain = subs.add_parser("explain", help="Show what taint-sentry sees in a piece of text")
     p_explain.add_argument("text", nargs="?", help="Text to inspect")
     p_explain.add_argument("--file", help="Read the text from a file instead")
     p_explain.add_argument("--json", action="store_true")
@@ -65,7 +65,7 @@ def setup_parser(subparser: Any) -> None:
 
 
 def handle(args: Any) -> int:
-    """Dispatch ``hermes sentry <subcommand>``."""
+    """Dispatch ``hermes taint-sentry <subcommand>``."""
     command = getattr(args, "sentry_command", None)
     handlers = {
         "status": cmd_status,
@@ -81,7 +81,7 @@ def handle(args: Any) -> int:
     handler = handlers.get(command or "")
     if handler is None:
         print(
-            "usage: hermes sentry <status|where|policy|receipts|test|explain|clear|allow|export>",
+            "usage: hermes taint-sentry <status|where|policy|receipts|test|explain|clear|allow|export>",
             file=sys.stderr,
         )
         return 2
@@ -97,7 +97,7 @@ def cmd_status(args: Any) -> int:
     tallies = receipts.counts()
     sessions = store.sessions()
 
-    print(f"sentry {_version()}  ·  mode: {policy.get('mode')}")
+    print(f"taint-sentry {_version()}  ·  mode: {policy.get('mode')}")
     print(f"policy:  {policy.get('_source')}")
     print(f"ledger:  {receipts.backend()}{'  ' + receipts.path() if receipts.path() else ''}")
     print(f"taint TTL: {policy.get('taint_ttl_seconds')}s")
@@ -205,7 +205,7 @@ def cmd_test(args: Any) -> int:
         print(json.dumps({"tainted": tainted, **decision.as_dict()}, indent=2, default=str))
         return 0
 
-    print(f"sentry dry-run  ·  tool={getattr(args, 'tool', '')}  ·  tainted={tainted}")
+    print(f"taint-sentry dry-run  ·  tool={getattr(args, 'tool', '')}  ·  tainted={tainted}")
     print(f"  {_ACTION_MARK.get(decision.action, decision.action.upper()):<9} rule={decision.rule or '-'}")
     print(f"  reason: {decision.reason}")
     if decision.detail:
@@ -228,10 +228,10 @@ def cmd_explain(args: Any) -> int:
         try:
             text = Path(path).read_text(encoding="utf-8", errors="replace")
         except OSError as err:
-            print(f"sentry: cannot read {path}: {err}", file=sys.stderr)
+            print(f"taint-sentry: cannot read {path}: {err}", file=sys.stderr)
             return 1
     if not text:
-        print("sentry: nothing to explain (pass text or --file)", file=sys.stderr)
+        print("taint-sentry: nothing to explain (pass text or --file)", file=sys.stderr)
         return 2
 
     hygiene = sanitize.strip_invisible(text)
@@ -273,7 +273,7 @@ def cmd_clear(args: Any) -> int:
     every = bool(getattr(args, "all", False))
     session = getattr(args, "session", "") or ""
     if not every and not session:
-        print("sentry: pass --session <id> or --all (see `hermes sentry status`)", file=sys.stderr)
+        print("taint-sentry: pass --session <id> or --all (see `hermes taint-sentry status`)", file=sys.stderr)
         return 2
 
     if every:
@@ -283,11 +283,11 @@ def cmd_clear(args: Any) -> int:
         count = 1 if store.clear(session) else 0
 
     requested = runtime.request_clear("" if every else session)
-    print(f"sentry: cleared {count} session(s) in this process")
+    print(f"taint-sentry: cleared {count} session(s) in this process")
     if requested:
         print(
-            "sentry: a running gateway keeps its own taint in memory and will clear it on its next "
-            "tool call — the Sentry pane's Clear taint button does it immediately."
+            "taint-sentry: a running gateway keeps its own taint in memory and will clear it on its next "
+            "tool call — the Taint Sentry pane's Clear taint button does it immediately."
         )
     return 0
 
@@ -295,12 +295,12 @@ def cmd_clear(args: Any) -> int:
 def cmd_allow(args: Any) -> int:
     data = runtime.data_dir()
     if data is None:
-        print("sentry: plugin data dir unavailable; cannot write a policy", file=sys.stderr)
+        print("taint-sentry: plugin data dir unavailable; cannot write a policy", file=sys.stderr)
         return 1
     key = "allow_paths" if getattr(args, "path", False) else "allow_hosts"
     value = str(getattr(args, "value", "")).strip()
     if not value:
-        print("sentry: nothing to allow", file=sys.stderr)
+        print("taint-sentry: nothing to allow", file=sys.stderr)
         return 2
 
     path = _policy_path(data)
@@ -309,7 +309,7 @@ def cmd_allow(args: Any) -> int:
         try:
             existing = policy_mod.load_policy_file(path) or {}
         except Exception as err:
-            print(f"sentry: cannot read {path}: {err}", file=sys.stderr)
+            print(f"taint-sentry: cannot read {path}: {err}", file=sys.stderr)
             return 1
     if not isinstance(existing, dict):
         existing = {}
@@ -325,13 +325,13 @@ def cmd_allow(args: Any) -> int:
     try:
         written = _write_policy(path, existing)
     except Exception as err:
-        print(f"sentry: cannot write policy: {err}", file=sys.stderr)
+        print(f"taint-sentry: cannot write policy: {err}", file=sys.stderr)
         return 1
 
     runtime.invalidate_settings()
     policy_mod.reset_cache()
     verb = "removed from" if getattr(args, "remove", False) else "added to"
-    print(f"sentry: {value} {verb} {key}")
+    print(f"taint-sentry: {value} {verb} {key}")
     print(f"        {written}")
     return 0
 

@@ -173,7 +173,7 @@ class TaintStore:
             return self._sessions.pop(session_id, None) is not None
 
     def reset(self) -> None:
-        """Drop every session's taint. Used by ``hermes sentry clear --all`` and tests."""
+        """Drop every session's taint. Used by ``hermes taint-sentry clear --all`` and tests."""
         with self._lock:
             self._sessions.clear()
 
@@ -199,7 +199,7 @@ class TaintStore:
             return self._live(session_id) is not None
 
     def snapshot(self, session_id: str) -> dict:
-        """Serializable taint state for a banner, a receipt or the ``sentry_status`` tool."""
+        """Serializable taint state for a banner, a receipt or the ``taint_status`` tool."""
         if not session_id:
             return {"session_id": "", "tainted": False, "marks_total": 0, "sources": {}, "artifacts": {}}
         with self._lock:
@@ -241,7 +241,7 @@ class TaintStore:
             return len(self._sessions)
 
     def sessions(self) -> list[dict]:
-        """Snapshot every live session. Used by ``hermes sentry status``."""
+        """Snapshot every live session. Used by ``hermes taint-sentry status``."""
         with self._lock:
             live = [self._live(sid) for sid in list(self._sessions)]
             return [s.as_dict() for s in live if s is not None]

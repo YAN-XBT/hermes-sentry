@@ -8,6 +8,7 @@ said. Signature scanning only explains the decision afterwards.
 from __future__ import annotations
 
 import base64
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import PurePath, PurePosixPath, PureWindowsPath
@@ -391,6 +392,15 @@ def _paths_from_command(command: str) -> list[str]:
     return [m.group(1) for m in _PATH_TOKEN_RE.finditer(command or "")]
 
 
+def _expanded(path: str) -> str:
+    """``~`` is a placeholder, not a location: expand it before asking where a path lands.
+
+    Skipping ``~``-prefixed paths made every home-relative write invisible to the outside-workspace
+    check — ``write_file("~/.bashrc")`` in a tainted session was never even considered.
+    """
+    return os.path.expanduser(path) if path.startswith("~") else path
+
+
 def _inside(path: str, workspace: str) -> bool:
     try:
         if re.match(r"^[A-Za-z]:[\\/]", path) or path.startswith("\\\\"):
@@ -618,9 +628,7 @@ def paths_of(tool_name: str, args: dict, *, workspace: str = "") -> PathTouches:
     sensitive = tuple(
         p for p in paths if is_sensitive_path(p) and _reads_what_it_names(tool, args)
     )
-    outside = tuple(
-        p for p in paths if workspace and not _inside(p, workspace) and not p.startswith("~")
-    )
+    outside = tuple(p for p in paths if workspace and not _inside(_expanded(p), workspace))
     command = str(args.get("command", "")) if tool in PATH_GATED_TOOLS else ""
     code = str(args.get("code") or args.get("script") or "") if tool == "execute_code" else ""
 

@@ -21,10 +21,10 @@ from .taint import TaintStore
 
 logger = logging.getLogger(__name__)
 
-PLUGIN_NAME = "sentry"
+PLUGIN_NAME = "taint-sentry"
 SETTINGS_TTL = 5.0
 
-#: Keys this plugin reads from ``plugins.entries.sentry.settings``. ``ctx.get_config`` is a
+#: Keys this plugin reads from ``plugins.entries.taint-sentry.settings``. ``ctx.get_config`` is a
 #: per-key getter (``get_config("mode")``), not a dict accessor — reading it with no argument
 #: returns the default and silently yields an empty settings dict.
 SETTING_KEYS = ("mode", "taint_ttl_seconds", "policy_file", "debug_trace", "on_error")
@@ -68,7 +68,7 @@ def settings() -> dict:
         else:
             value = dict(_settings)
     except Exception as err:  # a settings read must never break a hook
-        logger.debug("sentry: settings read failed (%s)", err)
+        logger.debug("taint-sentry: settings read failed (%s)", err)
         value = dict(_settings)
     with _lock:
         _settings = value
@@ -89,7 +89,7 @@ _CLEAR_MAX_AGE = 300.0  # a stale request must never clear a later session's tai
 def request_clear(session_id: str = "") -> bool:
     """Leave a clear request for the process that actually holds the taint.
 
-    Taint lives in the memory of the process running the agent, so `hermes sentry clear` typed in a
+    Taint lives in the memory of the process running the agent, so `hermes taint-sentry clear` typed in a
     shell cannot reach it — that command is its own process with its own empty store. The CLI leaves
     this marker instead, and the next tool call in the live process consumes it.
     """
@@ -103,7 +103,7 @@ def request_clear(session_id: str = "") -> bool:
         )
         return True
     except Exception as err:  # pragma: no cover - depends on host layout
-        logger.debug("sentry: cannot leave a clear request (%s)", err)
+        logger.debug("taint-sentry: cannot leave a clear request (%s)", err)
         return False
 
 
@@ -135,7 +135,7 @@ def consume_clear_request() -> dict:
 
 
 def data_dir() -> Path | None:
-    """``<hermes home>/plugin-data/sentry/`` — survives plugin update/remove, follows the profile."""
+    """``<hermes home>/plugin-data/taint-sentry/`` — survives plugin update/remove, follows the profile."""
     global _data_dir, _data_dir_resolved
     if _data_dir_resolved:
         return _data_dir
@@ -144,7 +144,7 @@ def data_dir() -> Path | None:
 
         _data_dir = plugin_data_dir(PLUGIN_NAME)
     except Exception as err:  # pragma: no cover - host layout dependent
-        logger.debug("sentry: no plugin data dir (%s)", err)
+        logger.debug("taint-sentry: no plugin data dir (%s)", err)
         _data_dir = None
     _data_dir_resolved = True
     return _data_dir

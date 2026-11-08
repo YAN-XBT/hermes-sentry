@@ -7,11 +7,11 @@ so they live in the CLI where only a person can run them.
 
 from __future__ import annotations
 
-SENTRY_STATUS = {
-    "name": "sentry_status",
+TAINT_STATUS = {
+    "name": "taint_status",
     "description": (
         "Report whether this session is currently tainted by untrusted content, which sources "
-        "tainted it, which injection signatures were seen, and how many tool calls sentry has "
+        "tainted it, which injection signatures were seen, and how many tool calls taint-sentry has "
         "gated. Call this when a tool call was blocked or escalated and you need to know why, or "
         "before doing something irreversible to check whether the session is under the influence "
         "of content that arrived from a web page, an MCP server, a screenshot or an image."
@@ -28,10 +28,10 @@ SENTRY_STATUS = {
     },
 }
 
-SENTRY_RECEIPTS = {
-    "name": "sentry_receipts",
+TAINT_RECEIPTS = {
+    "name": "taint_receipts",
     "description": (
-        "List recent sentry decisions: which tool call was allowed, blocked, escalated or observed, "
+        "List recent taint-sentry decisions: which tool call was allowed, blocked, escalated or observed, "
         "under which rule, and which untrusted source caused it. Use this to explain a block to the "
         "user, or to audit what happened earlier in the session."
     ),
@@ -51,4 +51,4 @@ SENTRY_RECEIPTS = {
     },
 }
 
-__all__ = ["SENTRY_STATUS", "SENTRY_RECEIPTS"]
+__all__ = ["TAINT_STATUS", "TAINT_RECEIPTS"]

@@ -16,7 +16,7 @@ def _err(message: str, **extra: Any) -> str:
     return json.dumps({"ok": False, "error": message, **extra}, default=str)
 
 
-def sentry_status(args: dict, **kwargs: Any) -> str:
+def taint_status(args: dict, **kwargs: Any) -> str:
     """Current taint state, policy in force and receipt tallies."""
     try:
         session = str(args.get("session_id") or runtime.session_of(
@@ -53,10 +53,10 @@ def sentry_status(args: dict, **kwargs: Any) -> str:
             }
         )
     except Exception as err:  # pragma: no cover
-        return _err(f"sentry_status failed: {err}")
+        return _err(f"taint_status failed: {err}")
 
 
-def sentry_receipts(args: dict, **kwargs: Any) -> str:
+def taint_receipts(args: dict, **kwargs: Any) -> str:
     """Recent decisions from the receipts ledger."""
     try:
         try:
@@ -92,7 +92,7 @@ def sentry_receipts(args: dict, **kwargs: Any) -> str:
             }
         )
     except Exception as err:  # pragma: no cover
-        return _err(f"sentry_receipts failed: {err}")
+        return _err(f"taint_receipts failed: {err}")
 
 
 def _stamp(ts: Any) -> str:
@@ -122,4 +122,4 @@ def sentry_explain(args: dict, **kwargs: Any) -> str:
     )
 
 
-__all__ = ["sentry_status", "sentry_receipts"]
+__all__ = ["taint_status", "taint_receipts"]

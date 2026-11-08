@@ -1,11 +1,11 @@
-"""Sentry's backend for its own desktop half.
+"""Taint Sentry's backend for its own desktop half.
 
 Runs inside the gateway process, so it reads the *live* plugin state — the same module objects the
-hooks use, not a copy. Routes mount under ``/api/plugins/sentry/``.
+hooks use, not a copy. Routes mount under ``/api/plugins/taint-sentry/``.
 
 The one thing this backend deliberately can do that the model cannot: change the policy. The pane
 toggles a rule, and that write happens here, on the human's click. A tool call that tried the same
-thing through the CLI or this API is refused by the ``sentry_tamper`` rule.
+thing through the CLI or this API is refused by the ``plugin_tamper`` rule.
 """
 
 from __future__ import annotations
@@ -13,20 +13,40 @@ from __future__ import annotations
 import importlib
 import logging
 import sys
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter
 
-logger = logging.getLogger("hermes_plugins.sentry.api")
+logger = logging.getLogger("hermes_plugins.taint_sentry.api")
 
 router = APIRouter()
 
-PLUGIN_ID = "sentry"
+PLUGIN_ID = "taint-sentry"
+#: This file is ``<package>/dashboard/plugin_api.py``, so the package is one level up. The loader
+#: turns the key's hyphen into an underscore — `taint-sentry` is imported as `taint_sentry` — which
+#: is why the module name is derived from the directory rather than from the key.
+PACKAGE_DIR = Path(__file__).resolve().parents[1]
+MODULE = PACKAGE_DIR.name.replace("-", "_")
 
 
 def _package() -> Any | None:
-    """The plugin's own package, however the loader happened to register it."""
-    for name in (PLUGIN_ID, f"hermes_plugins.{PLUGIN_ID}"):
+    """The plugin's own package, however the loader happened to register it.
+
+    It has to be the *live* module the hooks use: a second import would be a second copy with its own
+    taint store, and the pane would show a plugin that is quietly not the one enforcing. So look for
+    the already-imported package this file lives in, by path, before guessing names.
+    """
+    for module in list(sys.modules.values()):
+        try:
+            if module is None or not hasattr(module, "runtime"):
+                continue
+            origin = getattr(module, "__file__", "") or ""
+            if origin and Path(origin).resolve() == PACKAGE_DIR / "__init__.py":
+                return module
+        except Exception:
+            continue
+    for name in (MODULE, f"hermes_plugins.{MODULE}"):
         try:
             module = importlib.import_module(name)
         except Exception:
@@ -34,7 +54,7 @@ def _package() -> Any | None:
         if hasattr(module, "runtime"):
             return module
     for key, module in list(sys.modules.items()):
-        if key.rsplit(".", 1)[-1] == PLUGIN_ID and hasattr(module, "runtime"):
+        if key.rsplit(".", 1)[-1] in {MODULE, PLUGIN_ID} and hasattr(module, "runtime"):
             return module
     return None
 
@@ -48,7 +68,7 @@ def _broadcast(event: str, payload: dict | None = None) -> None:
 
         broadcast_plugin_event(PLUGIN_ID, event, payload or {})
     except Exception as err:  # pragma: no cover - depends on host layout
-        logger.debug("sentry: broadcast failed (%s)", err)
+        logger.debug("taint-sentry: broadcast failed (%s)", err)
 
 
 def _unavailable(reason: str) -> dict:
@@ -97,7 +117,7 @@ async def state() -> dict:
             "ledger": pkg.receipts.backend(),
         }
     except Exception as err:
-        logger.warning("sentry: /state failed (%s)", err)
+        logger.warning("taint-sentry: /state failed (%s)", err)
         return _unavailable(str(err))
 
 
@@ -115,7 +135,7 @@ async def receipts(limit: int = 40, session_id: str = "", actions_only: bool = F
         )
         return {"items": rows}
     except Exception as err:
-        logger.warning("sentry: /receipts failed (%s)", err)
+        logger.warning("taint-sentry: /receipts failed (%s)", err)
         return {"items": [], "reason": str(err)}
 
 
@@ -130,7 +150,7 @@ async def explain() -> dict:
             if str(row.get("action")) in ("block", "escalate"):
                 return {"decision": row}
     except Exception as err:
-        logger.warning("sentry: /explain failed (%s)", err)
+        logger.warning("taint-sentry: /explain failed (%s)", err)
     return {"decision": None}
 
 
@@ -152,7 +172,7 @@ async def taint_clear(body: dict | None = None) -> dict:
         _broadcast("provenance", {"cleared": cleared})
         return {"ok": True, "cleared": cleared}
     except Exception as err:
-        logger.warning("sentry: /taint/clear failed (%s)", err)
+        logger.warning("taint-sentry: /taint/clear failed (%s)", err)
         return {"ok": False, "reason": str(err)}
 
 
@@ -160,8 +180,8 @@ async def taint_clear(body: dict | None = None) -> dict:
 async def set_rule(body: dict) -> dict:
     """Set one rule's action in the plugin's own policy file.
 
-    This is the human's click in the pane. The model has no route to it: `hermes sentry set`, the
-    same edit in `config.yaml`, and a request to this namespace all trip `sentry_tamper`.
+    This is the human's click in the pane. The model has no route to it: `hermes taint-sentry set`, the
+    same edit in `config.yaml`, and a request to this namespace all trip `plugin_tamper`.
     """
     pkg = _package()
     if pkg is None:
@@ -200,5 +220,5 @@ async def set_rule(body: dict) -> dict:
         _broadcast("policy.changed", {"rule": rule, "action": action})
         return {"ok": True, "rule": rule, "action": action, "policy_file": str(path)}
     except Exception as err:
-        logger.warning("sentry: /rules failed (%s)", err)
+        logger.warning("taint-sentry: /rules failed (%s)", err)
         return {"ok": False, "reason": str(err)}

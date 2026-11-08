@@ -1,6 +1,6 @@
 {
-  "name": "sentry",
-  "title": "Sentry",
+  "name": "taint-sentry",
+  "title": "Taint Sentry",
   "api": "plugin_api.py",
-  "description": "Backend for Sentry's own desktop pane: live taint state, the receipts feed, per-rule actions."
+  "description": "Backend for Taint Sentry's own desktop pane: live taint state, the receipts feed, per-rule actions."
 }

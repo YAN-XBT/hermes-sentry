@@ -1,17 +1,17 @@
-# Sentry — roadmap
+# Taint Sentry — roadmap
 
 ## Now: make it visible
 
-Sentry's engine is done (69 tests, `doctor` + `validate` clean, PR open). What it lacks is a
+Taint Sentry's engine is done (69 tests, `doctor` + `validate` clean, PR open). What it lacks is a
 *visible* surface — everything it does today is a refusal in a log line. Add the Desktop half
 (`desktop/plugin.js` in this folder = unified package, no build step, hot reload):
 
-- status-bar chip — `sentry: clean` / `sentry: tainted · N`
+- status-bar chip — `taint-sentry: clean` / `taint-sentry: tainted · N`
 - pane console — live receipt feed: rule, tool, what was refused, what tainted the session
-- per-rule toggles in the UI (today only `hermes sentry policy` / config)
-- ⌘K palette — "Sentry: explain last block", "Sentry: clear taint"
+- per-rule toggles in the UI (today only `hermes taint-sentry policy` / config)
+- ⌘K palette — "Taint Sentry: explain last block", "Taint Sentry: clear taint"
 - settings page under Settings → Plugins
-- backend `plugin_api.py` → `/api/plugins/sentry`, reading the existing `receipts.db`
+- backend `plugin_api.py` → `/api/plugins/taint-sentry`, reading the existing `receipts.db`
 
 Constraints: `desktop/plugin.js` may import only `@hermes/plugin-sdk`, `react`,
 `react/jsx-runtime`; no `eval`; no prototype patching; never query the app's own markup
@@ -32,12 +32,12 @@ Find bugs before a judge does. Both directions, through the real hook layer:
   push, install, browse, `gh`, `docker`, `ssh`. Every block here costs more than a miss.
 - **Live** — the plugin policing its own repository is the harshest test there is.
 
-## Parked: entry #2 (build after Sentry ships)
+## Parked: entry #2 (build after Taint Sentry ships)
 
 **Session flight recorder.** Record every tool call and result to a local DB, then give it a
 timeline, replay and undo: "what did my agent do overnight", "put that file back the way it was".
 Hooks + `plugin_db` + a Desktop timeline. Differentiator: nothing in the 977-plugin marketplace
-does session-level replay with rollback. Parked on purpose — Sentry is at the finish line and
+does session-level replay with rollback. Parked on purpose — Taint Sentry is at the finish line and
 splitting the remaining days risks both entries.
 
 ## Submission checklist

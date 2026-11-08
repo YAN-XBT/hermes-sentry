@@ -1,6 +1,6 @@
 """Durable receipts: every decision this plugin makes, with the source that caused it.
 
-Backed by the plugin's own SQLite database under ``<hermes home>/plugin-data/sentry/``, which
+Backed by the plugin's own SQLite database under ``<hermes home>/plugin-data/taint-sentry/``, which
 survives ``hermes plugins update`` and ``remove`` and follows the active profile. If that storage
 is unavailable the ledger degrades to an in-memory ring buffer so the plugin still works — a
 missing receipt is a bug, a crash on the tool path is an outage.
@@ -20,7 +20,7 @@ from . import sanitize
 
 logger = logging.getLogger(__name__)
 
-PLUGIN_NAME = "sentry"
+PLUGIN_NAME = "taint-sentry"
 DB_FILENAME = "receipts.db"
 MAX_MEMORY_ROWS = 1000
 
@@ -82,12 +82,12 @@ def _connect() -> sqlite3.Connection | None:
         _state["path"] = "plugin-data/%s/%s" % (PLUGIN_NAME, DB_FILENAME)
     except Exception as err:  # pragma: no cover - depends on host layout
         _state["failed"] = True
-        logger.warning("sentry: receipts DB unavailable, using memory ledger (%s)", err)
+        logger.warning("taint-sentry: receipts DB unavailable, using memory ledger (%s)", err)
     return _state["conn"]
 
 
 def backend() -> str:
-    """``"sqlite"`` or ``"memory"`` — reported by ``hermes sentry status``."""
+    """``"sqlite"`` or ``"memory"`` — reported by ``hermes taint-sentry status``."""
     return "sqlite" if _connect() is not None else "memory"
 
 
@@ -145,7 +145,7 @@ def record(
             )
             conn.commit()
     except Exception as err:  # pragma: no cover
-        logger.debug("sentry: receipt write failed (%s)", err)
+        logger.debug("taint-sentry: receipt write failed (%s)", err)
         with _lock:
             _memory.append(row)
     _notify(row)
@@ -178,7 +178,7 @@ def recent(limit: int = 20, *, session_id: str = "", actions_only: bool = False)
             keys = ("ts", "session_id", "turn_id", "kind", "tool_name", "rule", "action", "severity", "sources", "detail")
             return [dict(zip(keys, row)) for row in cursor.fetchall()]
         except Exception as err:  # pragma: no cover
-            logger.debug("sentry: receipt read failed (%s)", err)
+            logger.debug("taint-sentry: receipt read failed (%s)", err)
             return []
 
 
@@ -208,7 +208,7 @@ def counts(*, since_seconds: float | None = None) -> dict:
 
 
 def export(limit: int = 200) -> str:
-    """Receipts as a JSON document (``hermes sentry export``)."""
+    """Receipts as a JSON document (``hermes taint-sentry export``)."""
     return json.dumps(recent(limit), indent=2, default=str)
 
 

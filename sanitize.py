@@ -137,7 +137,39 @@ def strip_invisible(text: str) -> Hygiene:
 # Patterns are deliberately loose and cheap. They never decide whether to gate a call (the source
 # does that); they name *why* a source looked hostile, which is what makes a receipt readable.
 
-_SIGNATURES: tuple[tuple[str, str, str], ...] = (
+#: An HTML comment longer than this is a payload dump, not a directive — the same window the rule
+#: always had (600 characters either side of the keyword).
+_COMMENT_SPAN_LIMIT = 1200
+_HTML_DIRECTIVE_RE = re.compile(r"(?i)\b(?:instruction|ignore|system|you\s+must|assistant)\b")
+
+
+def _find_html_comment_directive(text: str) -> str | None:
+    """The first HTML comment whose body reads like an instruction, or ``None``.
+
+    Deliberately not one regex. The natural pattern — a lazy "anything that is not the end of the
+    comment", twice — re-tests at every character it consumes, so a body made of ``<!--`` with no
+    ``-->`` anywhere costs seconds inside a single call: measured 4.8 s at the 200 KB scan cap, which
+    is a free stall for any page that ships it. Walking the text with ``str.find`` is linear and
+    cannot be steered, and it expresses two things one pattern cannot: the comment has to close, and
+    it is allowed to contain ``>`` on the way there.
+    """
+    at = 0
+    while True:
+        start = text.find("<!--", at)
+        if start < 0:
+            return None
+        end = text.find("-->", start + 4)
+        if end < 0:
+            return None
+        body = text[start:end]
+        if len(body) <= _COMMENT_SPAN_LIMIT and _HTML_DIRECTIVE_RE.search(body):
+            return body
+        at = end + 3
+
+
+#: A rule is `(name, severity, matcher)`, where the matcher is either a pattern string or, where a
+#: pattern cannot be made linear, a function returning the offending text.
+_SIGNATURES: tuple[tuple[str, str, object], ...] = (
     (
         "instruction_override",
         "high",
@@ -208,8 +240,7 @@ _SIGNATURES: tuple[tuple[str, str, str], ...] = (
     (
         "html_comment_directive",
         "medium",
-        r"(?is)<!--(?:(?!-->).){0,600}?\b(?:instruction|ignore|system|you\s+must|assistant)\b"
-        r"(?:(?!-->).){0,600}?-->",
+        _find_html_comment_directive,
     ),
     (
         "css_cloak",
@@ -224,8 +255,21 @@ _SIGNATURES: tuple[tuple[str, str, str], ...] = (
     ),
 )
 
-_COMPILED: tuple[tuple[str, str, re.Pattern[str]], ...] = tuple(
-    (name, severity, re.compile(pattern)) for name, severity, pattern in _SIGNATURES
+def _matcher(spec: object):
+    """A rule's matcher: a function as-is, or a pattern compiled into one that returns its match."""
+    if callable(spec):
+        return spec
+    rx = re.compile(str(spec))
+
+    def _search(text: str) -> str | None:
+        found = rx.search(text)
+        return found.group(0) if found else None
+
+    return _search
+
+
+_MATCHERS: tuple[tuple[str, str, object], ...] = tuple(
+    (name, severity, _matcher(spec)) for name, severity, spec in _SIGNATURES
 )
 
 MAX_FINDINGS = 12
@@ -240,14 +284,14 @@ def scan(text: str) -> list[Finding]:
 
     findings: list[Finding] = []
     seen: set[str] = set()
-    for name, severity, regex in _COMPILED:
+    for name, severity, match_rule in _MATCHERS:
         if name in seen:
             continue
-        match = regex.search(text)
-        if match is None:
+        hit = match_rule(text)
+        if not hit:
             continue
         seen.add(name)
-        excerpt = " ".join(match.group(0).split())[:160]
+        excerpt = " ".join(hit.split())[:160]
         findings.append(Finding(name=name, severity=severity, excerpt=excerpt))
         if len(findings) >= MAX_FINDINGS:
             break
@@ -300,7 +344,7 @@ def redact_secrets(text: str) -> str:
 
 
 def category_summary(text: str) -> dict[str, int]:
-    """Count format characters by unicode category. Used by ``hermes sentry explain``."""
+    """Count format characters by unicode category. Used by ``hermes taint-sentry explain``."""
     counts: dict[str, int] = {}
     for ch in text[:MAX_SCAN_CHARS]:
         if unicodedata.category(ch) == "Cf":

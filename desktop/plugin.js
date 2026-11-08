@@ -1,11 +1,11 @@
 /**
- * Sentry — desktop half. Ships inside the agent package as `desktop/plugin.js`
- * (the app copies it to <hermes home>/desktop-plugins/sentry/ and loads it through the normal
+ * Taint Sentry — desktop half. Ships inside the agent package as `desktop/plugin.js`
+ * (the app copies it to <hermes home>/desktop-plugins/taint-sentry/ and loads it through the normal
  * disk door). Plain ESM, loaded uncompiled: UI is jsx() calls, not JSX syntax.
  * Only `@hermes/plugin-sdk`, `react` and `react/jsx-runtime` resolve here.
  *
  * Everything it shows comes from the Python half's own namespace
- * (`api.rest('/…')` → `/api/plugins/sentry/…`). The gateway pushes each decision over the plugin
+ * (`api.rest('/…')` → `/api/plugins/taint-sentry/…`). The gateway pushes each decision over the plugin
  * event stream, so the console updates the moment a call is refused; the 5 s poll is the fallback
  * (a socket can always drop, and this has to keep working).
  */
@@ -27,7 +27,7 @@ import {
 } from '@hermes/plugin-sdk'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
-const ID = 'sentry'
+const ID = 'taint-sentry'
 
 // Set in register(ctx). The components below only run after it, so this is populated by then.
 let api = null
@@ -82,8 +82,8 @@ function SentryChip() {
   const mode = state?.mode ?? '…'
   return jsx(Tip, {
     label: tainted
-      ? `Sentry: ${tainted} session(s) carrying untrusted content — ${state.tainted.map(s => s.labels).join(', ')}`
-      : `Sentry: no untrusted content in play (mode: ${mode})`,
+      ? `Taint Sentry: ${tainted} session(s) carrying untrusted content — ${state.tainted.map(s => s.labels).join(', ')}`
+      : `Taint Sentry: no untrusted content in play (mode: ${mode})`,
     children: jsx('button', {
       type: 'button',
       className: cn(
@@ -93,7 +93,7 @@ function SentryChip() {
       ),
       onClick: () => {
         haptic('tap')
-        host.navigate('/sentry')
+        host.navigate('/taint-sentry')
       },
       children: [
         jsx('span', {
@@ -102,7 +102,7 @@ function SentryChip() {
             tainted ? 'bg-(--ui-accent)' : 'bg-(--ui-text-quaternary)'
           )
         }),
-        jsx('span', { children: tainted ? `sentry · tainted ${tainted}` : 'sentry' })
+        jsx('span', { children: tainted ? `taint-sentry · tainted ${tainted}` : 'taint-sentry' })
       ]
     })
   })
@@ -120,7 +120,7 @@ function SentryPane() {
       jsxs('div', {
         className: 'flex items-center gap-2',
         children: [
-          jsx('span', { className: 'font-medium', children: 'Sentry' }),
+          jsx('span', { className: 'font-medium', children: 'Taint Sentry' }),
           jsx(Badge, { children: state?.mode ?? '…' }),
           jsx('span', { className: 'flex-1' }),
           jsx(Button, {
@@ -128,7 +128,7 @@ function SentryPane() {
               haptic('tap')
               api.rest('/taint/clear', { method: 'POST', body: {} }).then(() => {
                 refresh()
-                host.notify({ kind: 'info', message: 'Sentry: taint cleared' })
+                host.notify({ kind: 'info', message: 'Taint Sentry: taint cleared' })
               })
             },
             children: 'Clear taint'
@@ -184,7 +184,7 @@ function SentryPane() {
                       haptic('tap')
                       api.rest('/rules', { method: 'POST', body: { rule, action } }).then(() => {
                         refresh()
-                        host.notify({ kind: 'info', message: `Sentry: ${rule} → ${action}` })
+                        host.notify({ kind: 'info', message: `Taint Sentry: ${rule} → ${action}` })
                       })
                     },
                     children: action
@@ -245,19 +245,19 @@ function SentryPane() {
 
 export default {
   id: ID, // must match the folder name
-  name: 'Sentry',
+  name: 'Taint Sentry',
   register(ctx) {
     api = ctx
 
     // The Python half broadcasts on every decision and every taint; one subscription each,
     // retired with the plugin. The components' poll is the fallback.
-    ctx.onEvent('plugin.sentry.decision', refresh)
-    ctx.onEvent('plugin.sentry.provenance', refresh)
+    ctx.onEvent('plugin.taint-sentry.decision', refresh)
+    ctx.onEvent('plugin.taint-sentry.provenance', refresh)
 
     ctx.register({
       id: 'pane',
       area: PANES_AREA,
-      title: 'sentry',
+      title: 'taint-sentry',
       data: { placement: 'right', width: '320px' },
       render: () => jsx(SentryPane, {})
     })
@@ -273,35 +273,35 @@ export default {
       {
         id: 'nav',
         area: SIDEBAR_NAV_AREA,
-        data: { path: '/sentry', label: 'Sentry', codicon: 'shield' }
+        data: { path: '/taint-sentry', label: 'Taint Sentry', codicon: 'shield' }
       },
       {
         id: 'route',
         area: ROUTES_AREA,
-        data: { path: '/sentry' },
+        data: { path: '/taint-sentry' },
         render: () => jsx(SentryPane, {})
       },
       {
         id: 'open',
         area: PALETTE_AREA,
         data: {
-          id: 'sentry.open',
-          label: 'Sentry: open console',
-          keywords: ['sentry', 'security', 'taint'],
-          run: () => host.navigate('/sentry')
+          id: 'taint-sentry.open',
+          label: 'Taint Sentry: open console',
+          keywords: ['taint-sentry', 'security', 'taint'],
+          run: () => host.navigate('/taint-sentry')
         }
       },
       {
         id: 'clear',
         area: PALETTE_AREA,
         data: {
-          id: 'sentry.clear',
-          label: 'Sentry: clear taint',
-          keywords: ['sentry', 'taint', 'clear'],
+          id: 'taint-sentry.clear',
+          label: 'Taint Sentry: clear taint',
+          keywords: ['taint-sentry', 'taint', 'clear'],
           run: () =>
             api.rest('/taint/clear', { method: 'POST', body: {} }).then(() => {
               refresh()
-              host.notify({ kind: 'info', message: 'Sentry: taint cleared' })
+              host.notify({ kind: 'info', message: 'Taint Sentry: taint cleared' })
             })
         }
       },
@@ -309,9 +309,9 @@ export default {
         id: 'explain',
         area: PALETTE_AREA,
         data: {
-          id: 'sentry.explain',
-          label: 'Sentry: explain the last block',
-          keywords: ['sentry', 'explain', 'block'],
+          id: 'taint-sentry.explain',
+          label: 'Taint Sentry: explain the last block',
+          keywords: ['taint-sentry', 'explain', 'block'],
           run: () =>
             api.rest('/explain').then(data => {
               const last = data?.decision
@@ -319,7 +319,7 @@ export default {
                 kind: last ? 'warning' : 'info',
                 message: last
                   ? `${last.rule} · ${last.tool_name} · ${last.detail || last.reason}`
-                  : 'Sentry: nothing has been blocked in this session.'
+                  : 'Taint Sentry: nothing has been blocked in this session.'
               })
             })
         }

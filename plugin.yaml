@@ -1,4 +1,4 @@
-name: sentry
+name: taint-sentry
 version: "0.1.0"
 manifest_version: 2
 api_version: 1
@@ -8,18 +8,23 @@ description: >
   Provenance and taint tracking for tool results. Every tool result is stamped with where it came
   from; content authored by a third party (web fetches, MCP servers, screenshots, images, and files
   written from untrusted content) is stripped of invisible characters, wrapped in untrusted markers,
-  and taints the session. Once tainted, side-effecting tool calls are gated by a policy: credential
-  reads, and writes into files the agent reads as instructions (AGENTS.md, SKILL.md, hook handlers,
-  Hermes' own config), are refused; network egress and writes outside the workspace go to Hermes's
-  approval gate. Deterministic enforcement at the tool boundary, which a prompt or skill cannot do.
-  Ships a receipts ledger, a `hermes sentry` CLI with a dry-run policy tester, and a rule set where
-  every rule is tunable to allow, monitor, escalate or block.
+  and marks the session as tainted. While a session is tainted, side-effecting tool calls are checked
+  against a policy: credential reads, and writes into files the agent reads as instructions
+  (AGENTS.md, SKILL.md, hook handlers, Hermes' own config), are refused; network egress and writes
+  outside the workspace go to Hermes's own approval gate, which is never auto-approved.
+  What is reliable and what is not: the taint mark itself is provenance-based — it comes from which
+  tool produced the content, not from guessing. The credential, egress and write detectors are
+  best-effort pattern matching over tool arguments, so an obfuscated command, a payload assembled to
+  avoid the patterns, and writes through the memory or cron tools can get past them. A seatbelt, not
+  a sandbox: the README's Known limitations says exactly what is out of scope.
+  Ships a receipts ledger, a `hermes taint-sentry` CLI with a dry-run policy tester, and a rule set
+  where every rule is tunable to allow, monitor, escalate or block.
 author: YAN-XBT
 homepage: https://github.com/YAN-XBT/hermes-sentry
 tags: [security, guardrails, prompt-injection, observability, taint]
 provides_tools:
-  - sentry_status
-  - sentry_receipts
+  - taint_status
+  - taint_receipts
 provides_hooks:
   - transform_tool_result
   - pre_tool_call
