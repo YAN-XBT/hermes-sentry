@@ -107,6 +107,30 @@ _SHELL_TAMPER_RE = re.compile(
     + r")"
 )
 
+#: A *copy* leaves its source in place, so copying a control path out is a read. A move does not, so
+#: moving the install dir away is still tampering — only copies get the benefit of the doubt.
+_COPY_VERB_RE = re.compile(r"(?i)^\s*(?:cp|copy|copy-item)\b")
+_SEGMENT_SPLIT_RE = re.compile(r"&&|\|\||[;|\n]")
+
+
+def _control_path_only_copied_out(text: str) -> bool:
+    """True when every mention of a control path is the *source* of a copy.
+
+    `cp -r <install dir> /tmp/inspect` reads the plugin: the path is what is being copied *from* and
+    nothing about the plugin changes. `cp evil.py <install dir>` writes into it. The verb list cannot
+    tell those apart, so the position decides — within one command segment, a copy source is followed
+    by another argument and a destination is last.
+    """
+    for segment in _SEGMENT_SPLIT_RE.split(text or ""):
+        if not _CONTROL_RE.search(segment):
+            continue
+        if not _COPY_VERB_RE.match(segment):
+            return False  # a control path anywhere other than a copy source is not a read
+        tokens = segment.split()
+        if tokens and _CONTROL_RE.search(tokens[-1]):
+            return False  # the copy destination is itself a control path
+    return True
+
 # `hermes config set plugins.entries.taint-sentry...` is covered by the switch patterns; the equivalent
 # edit to Hermes' own config file has to be covered too, or the guardrail is one file edit away.
 # Both spellings count: the dotted key path, and the nested YAML the file actually holds.
@@ -166,6 +190,8 @@ def _tamper_target(tool: str, args: dict, touched: "sources.PathTouches | None" 
     for key in _CODE_KEYS:
         value = args.get(key)
         if isinstance(value, str) and value and _SHELL_TAMPER_RE.search(value):
+            if _control_path_only_copied_out(value):
+                continue
             return value
     return ""
 

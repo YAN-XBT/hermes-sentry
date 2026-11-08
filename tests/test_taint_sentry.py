@@ -1086,6 +1086,30 @@ def test_a_block_in_a_tainted_session_still_names_the_source() -> None:
     assert "Clear taint" in message
 
 
+def test_copying_the_installed_plugin_out_is_not_tampering() -> None:
+    """`cp -r <install dir> /tmp/inspect` reads the plugin; the verb list alone cannot see that.
+
+    The rule matched the *verb*, not the direction, so copying the installed copy somewhere to look
+    at it was refused as if it were a write into it.
+    """
+    _reset()
+    install = f"/home/u/.hermes/plugins/{_P}"
+
+    assert _decide("terminal", {"command": f"cp -r {install} /tmp/inspect"}).action == "allow"
+    assert _decide("terminal", {"command": f"cp -r {install} /tmp/i && ls /tmp/i"}).action == "allow"
+    assert _decide("terminal", {"command": f"cp {install}/sources.py /tmp/s.py"}).action == "allow"
+
+    # writing into it, moving it away, or copying onto a control path is still tampering
+    assert _decide("terminal", {"command": f"cp evil.py {install}/policy.py"}).action == "block"
+    assert _decide("terminal", {"command": f"mv {install} /tmp/away"}).action == "block"
+    assert _decide("terminal", {"command": f"cp {install}/policy.py {install}/policy.bak"}).action == "block"
+
+    # and a switch form stays blocked even with a copy in front of it
+    assert _decide(
+        "terminal", {"command": f"cp -r {install} /tmp/i && hermes {_P} set credential_read allow"}
+    ).action == "block"
+
+
 def test_plugin_tamper_is_blocked() -> None:
     _reset()
     for args in (
