@@ -1098,6 +1098,11 @@ def test_copying_the_installed_plugin_out_is_not_tampering() -> None:
     assert _decide("terminal", {"command": f"cp -r {install} /tmp/inspect"}).action == "allow"
     assert _decide("terminal", {"command": f"cp -r {install} /tmp/i && ls /tmp/i"}).action == "allow"
     assert _decide("terminal", {"command": f"cp {install}/sources.py /tmp/s.py"}).action == "allow"
+    # wrapped in the ways real commands wrap things: the verb is not the first token
+    assert _decide(
+        "terminal", {"command": f"if cp -r {install} /tmp/i 2>/dev/null; then echo ok; fi"}
+    ).action == "allow"
+    assert _decide("terminal", {"command": f"sudo cp -r {install} /tmp/i"}).action == "allow"
 
     # writing into it, moving it away, or copying onto a control path is still tampering
     assert _decide("terminal", {"command": f"cp evil.py {install}/policy.py"}).action == "block"

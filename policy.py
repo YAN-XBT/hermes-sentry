@@ -109,7 +109,7 @@ _SHELL_TAMPER_RE = re.compile(
 
 #: A *copy* leaves its source in place, so copying a control path out is a read. A move does not, so
 #: moving the install dir away is still tampering — only copies get the benefit of the doubt.
-_COPY_VERB_RE = re.compile(r"(?i)^\s*(?:cp|copy|copy-item)\b")
+_COPY_VERB_RE = re.compile(r"(?i)\b(?:cp|copy|copy-item)\b")
 _SEGMENT_SPLIT_RE = re.compile(r"&&|\|\||[;|\n]")
 
 
@@ -119,15 +119,16 @@ def _control_path_only_copied_out(text: str) -> bool:
     `cp -r <install dir> /tmp/inspect` reads the plugin: the path is what is being copied *from* and
     nothing about the plugin changes. `cp evil.py <install dir>` writes into it. The verb list cannot
     tell those apart, so the position decides — within one command segment, a copy source is followed
-    by another argument and a destination is last.
+    by another argument and a destination is last. The verb is looked for anywhere in the segment, not
+    just at its start, because real commands wrap it (`if cp … ; then`, `sudo cp …`, `time cp …`).
     """
     for segment in _SEGMENT_SPLIT_RE.split(text or ""):
         if not _CONTROL_RE.search(segment):
             continue
-        if not _COPY_VERB_RE.match(segment):
-            return False  # a control path anywhere other than a copy source is not a read
         tokens = segment.split()
-        if tokens and _CONTROL_RE.search(tokens[-1]):
+        if not tokens or not _COPY_VERB_RE.search(segment):
+            return False  # a control path that no copy touches is not a read
+        if _CONTROL_RE.search(tokens[-1]):
             return False  # the copy destination is itself a control path
     return True
 
