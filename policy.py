@@ -96,14 +96,27 @@ _TAMPER_VERBS = (
     r"curl|wget|httpie|Invoke-WebRequest|Invoke-RestMethod|iwr"
 )
 
+_CTRL_PATH = r"(?:plugin-data[/\\]|plugins[/\\])" + _P
+
+#: Mutators that come *after* the path, which is how Python writes one:
+#: `Path("<path>").write_text(...)`, `open("<path>", "w")`, `os.unlink("<path>")`.
+_PATH_THEN_MUTATOR = (
+    r"[^\n]{0,120}?(?:"
+    r"write_text|write_bytes|unlink|rmtree|rename|replace|truncate|"
+    r"open\s*\([^)\n]{0,60}?['\"][wa]"
+    r")"
+)
+
 _SHELL_TAMPER_RE = re.compile(
     r"(?i)(?:"
     r"hermes\s+plugins?\s+(?:disable|remove|uninstall)\s+" + _P + r"|"
     r"hermes\s+config\s+(?:set|unset)\s+plugins\.entries\." + _P + r"|"
     r"hermes\s+" + _P + r"\s+(?:set|allow|clear)|"
-    r"(?:" + _TAMPER_VERBS + r")\b[^\n]{0,120}?(?:plugin-data[/\\]|plugins[/\\])" + _P + r"|"
-    r"open\s*\([^)\n]{0,40}['\"][wa][^\n]{0,120}?(?:plugin-data[/\\]|plugins[/\\])" + _P + r"|"
-    r"(?:>>?|--output[= ])(?!/dev/null|/dev/stdout|/dev/stderr|nul\b|&\d)[^\n]{0,120}?(?:plugin-data[/\\]|plugins[/\\])" + _P
+    r"(?:" + _TAMPER_VERBS + r")\b[^\n]{0,120}?" + _CTRL_PATH + r"|"
+    r"open\s*\([^)\n]{0,40}['\"][wa][^\n]{0,120}?" + _CTRL_PATH + r"|"
+    r"open\s*\([^)\n]{0,200}?" + _CTRL_PATH + r"[^)\n]{0,60}?['\"][wa]|"
+    + _CTRL_PATH + _PATH_THEN_MUTATOR + r"|"
+    r"(?:>>?|--output[= ])(?!/dev/null|/dev/stdout|/dev/stderr|nul\b|&\d)[^\n]{0,120}?" + _CTRL_PATH
     + r")"
 )
 
@@ -123,7 +136,10 @@ def _control_path_only_copied_out(text: str) -> bool:
     just at its start, because real commands wrap it (`if cp … ; then`, `sudo cp …`, `time cp …`).
     """
     for segment in _SEGMENT_SPLIT_RE.split(text or ""):
-        if not _CONTROL_RE.search(segment):
+        # Only segments that are candidates for tampering at all. A `grep` for the plugin's own API
+        # route mentions a control path without touching anything, and treating a mere mention as a
+        # change cancelled the exemption for the whole command.
+        if not _SHELL_TAMPER_RE.search(segment):
             continue
         tokens = segment.split()
         if not tokens or not _COPY_VERB_RE.search(segment):

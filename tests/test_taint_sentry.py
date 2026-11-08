@@ -1086,33 +1086,48 @@ def test_a_block_in_a_tainted_session_still_names_the_source() -> None:
     assert "Clear taint" in message
 
 
-def test_copying_the_installed_plugin_out_is_not_tampering() -> None:
-    """`cp -r <install dir> /tmp/inspect` reads the plugin; the verb list alone cannot see that.
+def test_only_a_change_to_the_plugin_is_tampering() -> None:
+    """Mentioning a control path is not touching it — a table of the shapes that come up in practice.
 
-    The rule matched the *verb*, not the direction, so copying the installed copy somewhere to look
-    at it was refused as if it were a write into it.
+    Each row is either a false positive found by working near the plugin's own files, or the mutation
+    that must not be excused by the fix for it.
     """
     _reset()
     install = f"/home/u/.hermes/plugins/{_P}"
+    data = f"/home/u/.hermes/plugin-data/{_P}"
 
-    assert _decide("terminal", {"command": f"cp -r {install} /tmp/inspect"}).action == "allow"
-    assert _decide("terminal", {"command": f"cp -r {install} /tmp/i && ls /tmp/i"}).action == "allow"
-    assert _decide("terminal", {"command": f"cp {install}/sources.py /tmp/s.py"}).action == "allow"
-    # wrapped in the ways real commands wrap things: the verb is not the first token
-    assert _decide(
-        "terminal", {"command": f"if cp -r {install} /tmp/i 2>/dev/null; then echo ok; fi"}
-    ).action == "allow"
-    assert _decide("terminal", {"command": f"sudo cp -r {install} /tmp/i"}).action == "allow"
+    reads = [
+        f"cp -r {install} /tmp/inspect",
+        f"cp -r {install} /tmp/i && ls /tmp/i",
+        f"cp {install}/sources.py /tmp/s.py",
+        f"if cp -r {install} /tmp/i 2>/dev/null; then echo ok; fi",
+        f"sudo cp -r {install} /tmp/i",
+        f"sha256sum {install}/sources.py",
+        f"ls -la {install}",
+        f"diff -r {install} /tmp/other",
+        f"cat {data}/policy.yaml",
+        f'grep -iE "loaded|/api/plugins/{_P}" ~/.hermes/logs/agent.log',
+        f'echo "the code lives in {install}"',
+        f"cp -r {install} /tmp/i && grep -c x /tmp/i/sources.py",
+    ]
+    changes = [
+        f"cp evil.py {install}/policy.py",
+        f"mv {install} /tmp/away",
+        f"rm -rf {install}",
+        f"cp {install}/policy.py {install}/policy.bak",
+        f"cp -r {install} /tmp/i && hermes {_P} set credential_read allow",
+        f"hermes plugins disable {_P}",
+        f"hermes config set plugins.entries.{_P}.settings.mode off",
+        f"echo mode: off > {data}/policy.yaml",
+        f"python -c \"open('{install}/policy.py','w').write('')\"",
+    ]
 
-    # writing into it, moving it away, or copying onto a control path is still tampering
-    assert _decide("terminal", {"command": f"cp evil.py {install}/policy.py"}).action == "block"
-    assert _decide("terminal", {"command": f"mv {install} /tmp/away"}).action == "block"
-    assert _decide("terminal", {"command": f"cp {install}/policy.py {install}/policy.bak"}).action == "block"
-
-    # and a switch form stays blocked even with a copy in front of it
-    assert _decide(
-        "terminal", {"command": f"cp -r {install} /tmp/i && hermes {_P} set credential_read allow"}
-    ).action == "block"
+    for command in reads:
+        assert _decide("terminal", {"command": command}).action == "allow", command
+    for command in changes:
+        decision = _decide("terminal", {"command": command})
+        assert decision.action == "block", command
+        assert decision.rule == "plugin_tamper", command
 
 
 def test_plugin_tamper_is_blocked() -> None:
