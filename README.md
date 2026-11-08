@@ -11,7 +11,10 @@ written from untrusted content — is stripped of invisible characters, wrapped 
 are gated by a policy: credential reads are refused, data-sending network calls ask a human first,
 and the reason names the exact source that tainted the run.
 
-This is deterministic enforcement, not guidance. A skill can suggest; taint-sentry vetoes.
+It acts at the tool boundary, where a prompt or a skill cannot: a skill can suggest, this returns a
+decision. What is deterministic is the taint mark — it comes from provenance, not from guessing at
+content. What acts on it is pattern matching over tool arguments, so read this as a seatbelt, not a
+sandbox: [Known limitations](#known-limitations) lists exactly what is out of scope.
 
 ```
 web page with hidden instructions ──▶ provenance stamp + invisible-char strip + taint
