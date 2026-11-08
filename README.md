@@ -1,3 +1,5 @@
+![taint-sentry — provenance and taint tracking for tool results](assets/banner.png)
+
 # taint-sentry — provenance and taint tracking for tool results
 
 Hermes tells the model that tool output is untrusted. It cannot *enforce* it. A prompt can ask a
