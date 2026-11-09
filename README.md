@@ -1,4 +1,4 @@
-![taint-sentry — provenance and taint tracking for tool results](assets/banner.png)
+![taint-sentry — provenance and taint tracking for tool results](assets/banner.jpg)
 
 # taint-sentry — provenance and taint tracking for tool results
 
