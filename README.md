@@ -310,7 +310,7 @@ no outbound requests.
 ## Development
 
 ```bash
-python tests/test_sentry.py                      # 47 tests, no runner needed
+python tests/test_taint_sentry.py                 # 88 tests, no runner needed
 hermes plugins doctor . --ci                     # real runtime contracts
 hermes plugins validate . --install-deps         # the catalog CI gate
 ```
