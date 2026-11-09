@@ -481,6 +481,7 @@ _READ_VERB_RE = re.compile(
     r"grep|rg|awk|sed|cut|sort|uniq|diff|"
     r"cp|mv|scp|rsync|sftp|ftp|"
     r"curl|wget|nc|ncat|socat|"
+    r"ssh-keygen|ssh-add|ssh|openssl|gpg|age|certutil|"
     r"python\d?|py|node|deno|bun|ruby|perl|php|powershell|pwsh|cmd|"
     r"get-content|gc|readfile|read_file|get_file)\b"
     r"|git\s+(?:add|stage|show|diff|cat-file|restore|checkout)\b"

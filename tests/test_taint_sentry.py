@@ -1130,6 +1130,34 @@ def test_only_a_change_to_the_plugin_is_tampering() -> None:
         assert decision.rule == "plugin_tamper", command
 
 
+def test_a_key_read_through_a_crypto_tool_is_blocked() -> None:
+    """`ssh-keygen -lf <private key>` reads the key: it is a credential read like any other.
+
+    Found in the wild — an agent asked for a key fingerprint shelled out to `ssh-keygen`, which was
+    not in the read-verb list, so a private key was read in a tainted session with nothing firing.
+    The path was already recognised as sensitive; the verb was what the rule could not see.
+    """
+    _reset()
+    for command in (
+        "ssh-keygen -lf ~/.ssh/id_rsa",
+        "ssh-keygen -lf /home/u/.ssh/hoodradar_deploy",
+        "openssl rsa -in ~/.ssh/id_rsa -text",
+    ):
+        decision = _decide("terminal", {"command": command}, tainted=True)
+        assert decision.action == "block", command
+        assert decision.rule == "credential_read", command
+
+    # a key handed straight to a network client trips the composite rule instead, which is stronger:
+    # it does not depend on taint at all
+    composite = _decide("terminal", {"command": "ssh -i ~/.ssh/deploy_key host"}, tainted=True)
+    assert composite.action == "block"
+    assert composite.rule == "credential_exfil"
+
+    # none of that fires in a clean session, and a public key is still public
+    assert _decide("terminal", {"command": "ssh-keygen -lf ~/.ssh/id_rsa"}).action == "allow"
+    assert _decide("terminal", {"command": "ssh-keygen -lf ~/.ssh/id_rsa.pub"}, tainted=True).action == "allow"
+
+
 def test_plugin_tamper_is_blocked() -> None:
     _reset()
     for args in (
