@@ -1,7 +1,8 @@
 """Taint Sentry test suite.
 
-Runs under pytest (``python -m pytest tests -q``) or standalone (``python tests/test_sentry.py``),
-so the plugin can be verified on a host with no test runner installed.
+Runs under pytest (``python -m pytest tests -q``) or standalone
+(``python tests/test_taint_sentry.py``), so the plugin can be verified on a host with no test runner
+installed.
 
 The tests are written as the plugin's contract, not as a mirror of its implementation:
 
@@ -17,17 +18,26 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import importlib.util
 import io
 import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+# The plugin package *is* this repository's root directory — and a clone of it is normally called
+# `hermes-sentry`, which is not a valid module name. So load it by path under a fixed name rather
+# than importing the directory: the suite then runs from a clone of any name.
+_PKG_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_PKG_DIR.parent))
 
-# The plugin package *is* this repository's root directory. The catalog key is `taint-sentry`; the
-# checkout directory keeps its own name, and a hyphen is not importable, so this reads `sentry`.
-import sentry  # noqa: E402
-from sentry import cli, policy as policy_mod, receipts, runtime, sanitize, sources  # noqa: E402
+_spec = importlib.util.spec_from_file_location(
+    "taint_sentry", _PKG_DIR / "__init__.py", submodule_search_locations=[str(_PKG_DIR)]
+)
+sentry = importlib.util.module_from_spec(_spec)
+sys.modules["taint_sentry"] = sentry
+_spec.loader.exec_module(sentry)
+
+from taint_sentry import cli, policy as policy_mod, receipts, runtime, sanitize, sources  # noqa: E402
 
 
 # --- harness ----------------------------------------------------------------------------------

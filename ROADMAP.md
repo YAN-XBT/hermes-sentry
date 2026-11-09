@@ -13,17 +13,11 @@ Provenance and taint tracking at the tool boundary: ten tunable rules, a receipt
 
 Listed in the Hermes marketplace: https://hermes-agent.nousresearch.com/marketplace/taint-sentry
 
-- tests 88/88 — `python tests/test_taint_sentry.py`, no runner needed
+- tests 89/89 — `python tests/test_taint_sentry.py`, no runner needed
 - `hermes plugins doctor . --ci` and `hermes plugins validate .` clean
 - 62 adversarial cases through the real hook layer: 0 missed, 0 false positives
 - a 69-call workflow sweep (138 clean/tainted evaluations): 0 gated in a clean session
 - catalog entry merged: NousResearch/hermes-agent#149412
-
-## Open
-
-- [ ] demo video ≤ 90 s on X, tagging `@NousResearch`
-- [ ] submit both links: https://form.typeform.com/to/FwJLvOln
-- deadline: 5 PM EST, Nov 11
 
 ## Next, when there is time
 
